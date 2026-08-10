@@ -1,0 +1,159 @@
+@import 'tailwindcss';
+
+/*
+ * Vision Studio — design tokens.
+ *
+ * A dark-first, low-chroma interface. The application's whole job is judging
+ * photographs, so the chrome stays neutral: any saturated surface next to an
+ * image shifts how its colour reads, and a framing decision made against a
+ * tinted background is made against the wrong reference.
+ */
+
+@theme {
+  --color-canvas: oklch(0.16 0.005 260);
+  --color-surface: oklch(0.20 0.006 260);
+  --color-surface-raised: oklch(0.24 0.007 260);
+  --color-border: oklch(0.30 0.008 260);
+  --color-border-strong: oklch(0.38 0.010 260);
+
+  --color-ink: oklch(0.96 0.003 260);
+  --color-ink-muted: oklch(0.72 0.008 260);
+  --color-ink-subtle: oklch(0.56 0.010 260);
+
+  --color-accent: oklch(0.72 0.15 195);
+  --color-accent-ink: oklch(0.18 0.02 195);
+  --color-accent-muted: oklch(0.40 0.07 195);
+
+  --color-positive: oklch(0.74 0.15 155);
+  --color-warning: oklch(0.80 0.14 85);
+  --color-danger: oklch(0.68 0.18 25);
+
+  /* Landmark overlay palette. Chosen for separation against skin, fabric and
+     studio grey alike, and distinguishable under the common forms of
+     colour-vision deficiency. */
+  --color-lm-head: oklch(0.80 0.17 90);
+  --color-lm-torso: oklch(0.72 0.16 195);
+  --color-lm-limb: oklch(0.70 0.19 320);
+  --color-lm-garment: oklch(0.76 0.16 145);
+  --color-lm-crop: oklch(0.85 0.19 40);
+
+  --radius-panel: 0.75rem;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Keyboard focus stays visible everywhere; pointer focus does not draw rings. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-border-strong);
+    border-radius: 5px;
+    border: 2px solid var(--color-canvas);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-ink-subtle);
+  }
+
+  /* Checkerboard behind anything with transparency — masks, cutouts. Without
+     it a white garment on an alpha background is indistinguishable from a
+     failed cutout. */
+  .alpha-checker {
+    background-image:
+      linear-gradient(45deg, oklch(0.28 0 0) 25%, transparent 25%),
+      linear-gradient(-45deg, oklch(0.28 0 0) 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, oklch(0.28 0 0) 75%),
+      linear-gradient(-45deg, transparent 75%, oklch(0.28 0 0) 75%);
+    background-size: 16px 16px;
+    background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+    background-color: oklch(0.22 0 0);
+  }
+
+  .numeric {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer utilities {
+  .panel {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-panel);
+  }
+
+  .panel-raised {
+    background: var(--color-surface-raised);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-panel);
+  }
+
+  /* Range inputs are the primary control in the framing editor; the native
+     appearance is inconsistent across platforms and too small to drag
+     precisely. */
+  input[type='range'] {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--color-border-strong);
+    outline: none;
+  }
+  input[type='range']::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: var(--color-accent);
+    cursor: grab;
+    border: 2px solid var(--color-canvas);
+  }
+  input[type='range']::-webkit-slider-thumb:active {
+    cursor: grabbing;
+    transform: scale(1.15);
+  }
+  input[type='range']::-moz-range-thumb {
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: var(--color-accent);
+    cursor: grab;
+    border: 2px solid var(--color-canvas);
+  }
+  input[type='range']:disabled {
+    opacity: 0.4;
+  }
+
+  /* When a slider marks an "effective range" band, the band and the base track
+     are drawn behind the input, so the native track must get out of the way.
+     An element+attribute selector outranks a utility class, hence a dedicated
+     rule rather than `bg-transparent`. */
+  input[type='range'].has-band {
+    background: transparent;
+  }
+}

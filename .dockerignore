@@ -1,0 +1,20 @@
+# Never ship the host machine's local data or model cache into the build
+# context — the image fetches its own models fresh (see Dockerfile), and the
+# database/media are runtime state, not build input.
+data/
+models/*
+!models/.gitkeep
+
+node_modules
+.next
+.git
+
+# Local-only artefacts that have shown up in this repo during development —
+# harmless to include, but pointless to send to the Docker build context.
+*.log
+dev-server.log
+*.tmp.cjs
+*.png
+
+.env
+.env*.local

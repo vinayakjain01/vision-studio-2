@@ -1,0 +1,54 @@
+# Render Blueprint — one-click deploy for the team.
+#
+# Render's own native Node runtime, not the Dockerfile in this repo. The
+# Dockerfile is real and still the right choice for the DigitalOcean fallback
+# mentioned in docs/DEPLOY.md — a VM you fully control, where you also control
+# the exact base image. On Render specifically, a custom Docker image turned
+# out to build fine but crash `better-sqlite3` with a segfault the instant it
+# loaded (exit 139) — almost certainly the native binary compiled or fetched
+# during that build not actually matching Render's runtime, in a way that was
+# not diagnosable from outside their infrastructure. Render's native
+# environment is their own maintained build image, built specifically to
+# support npm packages with native addons (sharp, sqlite3, canvas and friends
+# are common on it) — it removes that entire class of mismatch because the
+# same image that builds it is guaranteed to be the one that runs it.
+#
+# Free plan, no persistent disk, no login. That combination means: the
+# database and every imported photo / generated image are wiped every time
+# this service restarts — including Render's own 15-minute-idle auto-sleep,
+# not just a redeploy. This is a deliberate, explicit choice for now (see
+# docs/DEPLOY.md) — this Blueprint is for trying the tool with the team
+# cheaply, not for storing a catalog anyone depends on. When that stops being
+# acceptable, the fix is a paid plan (`plan: standard` or higher) plus a
+# `disk:` block mounted at /app/data — nothing else in this file changes.
+#
+# Vision analysis and rendering run in worker processes that each load four
+# ONNX models (~160MB of weights). JOB_VISION_CONCURRENCY /
+# JOB_RENDER_CONCURRENCY / VISION_ORT_THREADS are pinned to 1 below —
+# already this repo's own safe default (src/config.ts), but pinned here
+# explicitly since the free plan's RAM is smaller than anything this app has
+# been tested against so far.
+
+services:
+  - type: web
+    name: vision-studio
+    runtime: node
+    plan: free
+    # `--include=dev` is deliberate: `NODE_ENV=production` is set below (for
+    # the app's own runtime behaviour), and with it active `npm ci` otherwise
+    # skips devDependencies — which is exactly where `typescript` and
+    # `tailwindcss`/`@tailwindcss/postcss` live. `next build` needs both; only
+    # the finished .next output and node_modules survive into the running
+    # service, so having devDependencies present during the build costs
+    # nothing at runtime.
+    buildCommand: npm ci --include=dev && npm run models:fetch && npm run build
+    startCommand: npm run db:migrate && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JOB_VISION_CONCURRENCY
+        value: "1"
+      - key: JOB_RENDER_CONCURRENCY
+        value: "1"
+      - key: VISION_ORT_THREADS
+        value: "1"

@@ -1,0 +1,46 @@
+
+> vision-studio@0.1.0 predev
+> tsx scripts/clean-dev-cache.ts
+
+
+> vision-studio@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.12 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://172.31.224.1:3000
+- Environments: .env.local
+✓ Ready in 2.3s
+Warning: Custom Cache-Control headers detected for the following routes:
+  - /_next/static/(.*)
+
+Setting a custom Cache-Control header can break Next.js development behavior.
+- Experiments (use with caution):
+  · serverActions
+
+○ Compiling / ...
+ GET / 200 in 3.3s (next.js: 1715ms, application-code: 1571ms)
+[pool] starting — 1 vision worker(s), 1 render worker(s), 1 ORT thread(s) each, staggered
+ POST /api/generate 201 in 1598ms (next.js: 1332ms, application-code: 266ms)
+ GET /api/batches/bat_7U0NwmkpttHvI4My 200 in 3.4s (next.js: 3.4s, application-code: 31ms)
+ GET /api/creatives/download?batchId=bat_7U0NwmkpttHvI4My&layout=catalog 200 in 1290ms (next.js: 915ms, application-code: 375ms)
+ GET /api/creatives/download?batchId=bat_7U0NwmkpttHvI4My&layout=catalog 200 in 363ms (next.js: 196ms, application-code: 168ms)
+ GET /api/creatives/download?batchId=bat_7U0NwmkpttHvI4My 200 in 154ms (next.js: 10ms, application-code: 144ms)
+ GET /products 200 in 2.9s (next.js: 1819ms, application-code: 1058ms)
+ GET /api/vision/status 200 in 4.4s (next.js: 623ms, application-code: 3.8s)
+○ Compiling /api/vision/status ...
+ GET /api/products?limit=60 200 in 4.7s (next.js: 4.6s, application-code: 66ms)
+ GET /api/templates?active=true 200 in 775ms (next.js: 725ms, application-code: 50ms)
+ GET /api/media/originals/b3/13/b313068176807fc21735ead5868abfbb4c957e9e98f5b3bc2ca9edc3f71656ab.jpg 200 in 3.5s (next.js: 3.3s, application-code: 144ms)
+ GET /api/media/originals/2f/bc/2fbcb025f9943decb65ad412eabec9ac553cf3820109301d278131cd4e6267b2.jpg 200 in 3.4s (next.js: 3.3s, application-code: 153ms)
+ GET /api/media/originals/35/0a/350a318cc4d234d578e221a787fd3371de759abab1497f57fd927201f3e3a437.jpg 200 in 3.5s (next.js: 3.3s, application-code: 161ms)
+ GET /api/media/originals/9a/f7/9af7dad22def87ddc98b2f884a6bd7058ef5e013d7e1b7940b362c8baf66662f.jpg 200 in 3.5s (next.js: 3.3s, application-code: 167ms)
+ GET /api/media/originals/b0/49/b0499de75d7c7427750a3d7152c385343099a6faf4d2ab3423a0805098deb676.jpg 200 in 3.5s (next.js: 3.3s, application-code: 175ms)
+ GET /api/media/originals/cd/54/cd54822c9846ba67c532df7da1998ae49a91e24a857ccddeab79804ac0d80d6c.jpg 200 in 2.7s (next.js: 2.6s, application-code: 180ms)
+ GET /api/media/originals/4c/a3/4ca3b3e868dfbd5ab1ffe173ab3159b5b7e2ff913b8b04ec0b7740a3d9a67c2e.jpg 200 in 296ms (next.js: 50ms, application-code: 246ms)
+ GET /api/media/originals/eb/06/eb06d8ab695af935133be3b43d3fc0204ac9e38921bd40cb75e9af5d152fc7a9.jpg 200 in 298ms (next.js: 118ms, application-code: 180ms)
+ GET /api/media/originals/3d/ce/3dced9e57a9a0fc2a62108962ba7c1e1915e19a69870e7b668bb6901649949f9.jpg 200 in 311ms (next.js: 82ms, application-code: 229ms)
+ GET /api/media/originals/86/05/8605590c93d26b058e45e2b8e910565da423003f831ede0106a90a4d8eb70803.jpg 200 in 235ms (next.js: 53ms, application-code: 183ms)
+ GET /api/media/originals/6a/00/6a0099657ff6fbc8514d2a0e67b9339f1c34e7fcdd7ac0b18f52babcc4372542.jpg 200 in 175ms (next.js: 24ms, application-code: 150ms)
+ GET /api/media/originals/9e/be/9ebee415ffab6852d050efe4b0fac52a0c80661b8aa3b902cc7b00ed181b239f.jpg 200 in 182ms (next.js: 60ms, application-code: 122ms)
+ GET /api/media/originals/62/0d/620d6ca7a3eaf15afe83edadc5ed59b881428ae1cbccf54df9a540ed8490d8e4.jpg 200 in 90ms (next.js: 18ms, application-code: 72ms)

@@ -1,0 +1,3 @@
+# ONNX model weights are downloaded here by `npm run models:fetch`.
+# Nothing in this directory is committed — see scripts/fetch-models.ts for the
+# manifest (URLs, sha256 digests, licences).
