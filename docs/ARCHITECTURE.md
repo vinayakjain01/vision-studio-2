@@ -72,10 +72,9 @@ Three boundaries carry most of the design weight:
 | `src/jobs/` | Queue, worker pool, job handlers | See §6 |
 | `src/db/` | Schema, migrations, repositories | Every SQL statement lives in `repositories.ts` |
 | `src/storage/` | Content-addressed media store | Path-traversal guard lives here, not at call sites |
-| `src/services/` | Host adapters and orchestration | Where the portable core meets this app. `inpaint-client.ts` calls the service below — see §6.6 |
+| `src/services/` | Host adapters and orchestration | Where the portable core meets this app. `cloudinary-service.ts` backs AI Extend — see §6.6 |
 | `src/app/` | Next.js routes and pages | Routes are thin |
 | `src/components/` | UI | `preview/` and `vision/` are the substantial ones |
-| `services/inpaint-service/` | **Standalone Python service.** SDXL inpainting for AI Extend | Separate deployable, own Dockerfile, own repo-relative README. Not part of the Next.js app or its build — see §6.6 and `docs/DEPLOY.md` |
 
 ---
 
@@ -344,17 +343,17 @@ Cancellation only touches `pending` and `claimed` rows — a `running` job is
 inside an inference call and cannot be interrupted safely — so the render handler
 re-checks `isBatchCancelled` immediately before writing output.
 
-### 6.6 External GPU jobs (AI Extend)
+### 6.6 External API jobs (AI Extend)
 
 `background_fill` is a third job kind, and it breaks the pattern above on
 purpose: `vision` and `render` are CPU work sized by what THIS machine can
-absorb (§6.4); `background_fill` is a network call to a GPU host that may not
-even be this machine, and sizing it the same way would size a remote
-resource by a local one.
+absorb (§6.4); `background_fill` is a call to Cloudinary's generative-fill
+API, and sizing it the same way would size a remote, rate-limited, BILLED
+resource by a local CPU one.
 
 Consequences of that:
 
-* **Its own slot group.** `pool.ts` gives it `INPAINT_JOB_CONCURRENCY`
+* **Its own slot group.** `pool.ts` gives it `CLOUDINARY_JOB_CONCURRENCY`
   dedicated worker slots, spawned the same way as vision/render slots
   (child process, `kinds: ['background_fill']`) but never folded into their
   groups as overflow — a vision slot picks up render work once analysis
@@ -373,28 +372,30 @@ Consequences of that:
   different in the jobs table on purpose: `fail()` consumes an attempt every
   time; `defer()` doesn't, because waiting for a dependency that's actively
   running is not evidence anything is wrong. An `ai_extend` render job's
-  `maxAttempts` is computed from `INPAINT_TIMEOUT_MS` at enqueue time (see
+  `maxAttempts` is computed from `CLOUDINARY_TIMEOUT_MS` at enqueue time (see
   `renderMaxAttempts` in `generation-service.ts`) specifically so it survives
   the slowest plausible wait — the default `maxAttempts` (3, exhausted in
   under 15 seconds against a 5-second poll) would give up long before even a
-  healthy GPU generation, let alone a CPU-test-mode one, finished.
-* **No fallback to a plain fill.** `src/services/inpaint-client.ts` never
-  swallows a failure into a degraded-but-successful render — a Cloudinary-backed
-  predecessor of this feature did exactly that, and the failure mode was
-  invisible: a transient network blip quietly became a white background
-  nobody noticed until they looked at the output. `background_fill` jobs fail
-  loudly, land in the batch's own failure list, and are retryable the normal
-  way once the service is reachable again.
+  healthy Cloudinary derivation finished.
+* **No fallback to a plain fill.** `src/services/cloudinary-service.ts` never
+  swallows a failure into a degraded-but-successful render — an earlier
+  iteration of this feature did exactly that, and the failure mode was
+  invisible: a transient blip quietly became a white background nobody
+  noticed until they looked at the output. `background_fill` jobs fail
+  loudly and land in the batch's own failure list. Auth and out-of-credit
+  failures are PARKED rather than retried, because no retry fixes either and
+  retrying would burn every attempt on every image against the same wall.
 
-The compositor (`src/render/compositor.ts`) does not call the inpaint service
-itself — only `buildInpaintTarget()` (builds the padded photo + feathered
-mask a `background_fill` job sends) and `computeOverflow()`/`inpaintCacheKind()`
+The compositor (`src/render/compositor.ts`) never calls Cloudinary itself —
+only `buildAiExtendTarget()` (works out the cropped photo and its placement
+a `background_fill` job sends) and `computeOverflow()`/`aiExtendCacheKind()`
 (the cheap check a render job runs to decide whether it needs to wait at
 all). `renderCreative()` only ever reads a byte buffer it's handed. Same
 reasoning as §4.4 ("one framing implementation") applied to a second axis: a
-compositor that reaches out to a GPU-hosted service on its own behalf is a
-compositor that is no longer a fast, pure, synchronous-apart-from-decode
-function — and every other job kind depends on it staying exactly that.
+compositor that reaches out to a paid API on its own behalf is a compositor
+that is no longer a fast, pure, synchronous-apart-from-decode function — and
+could quietly re-bill on every render. Every other job kind depends on it
+staying exactly what it is.
 
 ---
 

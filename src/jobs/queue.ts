@@ -40,11 +40,11 @@ import type { JobKind, JobPayload, JobRecord, JobStatus } from '@/db/types'
  * before checking again (`defer()`, below). Shared between
  * `src/jobs/worker-entry.ts` (uses it to reschedule) and
  * `src/services/generation-service.ts` (uses it to size how many attempts an
- * `ai_extend` render job needs to outlast one `INPAINT_TIMEOUT_MS`-long wait)
+ * `ai_extend` render job needs to outlast one `CLOUDINARY_TIMEOUT_MS`-long wait)
  * so the two stay in sync without one importing the other's module — a few
- * seconds: short enough that a fast production generation doesn't add
- * noticeable latency once it lands, long enough that a CPU-test-mode
- * generation (minutes) isn't polled hundreds of times for nothing.
+ * seconds: short enough that a cached or fast derivation doesn't add
+ * noticeable latency once it lands, long enough that a first-time Cloudinary
+ * render (tens of seconds) isn't polled hundreds of times for nothing.
  */
 export const BACKGROUND_FILL_POLL_MS = 5_000
 
@@ -401,6 +401,18 @@ export function get(jobId: string): JobRecord | null {
  * EVERY check — a tight retry storm against exactly the service that just
  * said no. This lets the caller see the failure and back off instead.
  */
+/**
+ * The most recent job with this dedupe key, whatever its status and however
+ * old. Lets a dependent job ask "what happened to the work I'm waiting on?"
+ * rather than guessing from a timeout.
+ */
+export function findLatestByDedupeKey(dedupeKey: string): JobRecord | null {
+  const row = getDb()
+    .prepare(`SELECT * FROM jobs WHERE dedupe_key = ? ORDER BY updated_at DESC LIMIT 1`)
+    .get(dedupeKey)
+  return row ? toJob(row) : null
+}
+
 export function findRecent(dedupeKey: string, withinMs: number): JobRecord | null {
   const cutoff = new Date(Date.now() - withinMs).toISOString()
   const row = getDb()

@@ -40,7 +40,6 @@ import { resolveTemplateVariables } from '@/templates/types'
 import type { VisionMetadata } from '@/vision/types'
 import { config } from '@/config'
 import { resolvePath } from '@/storage/media-store'
-import sharp from 'sharp'
 import crypto from 'crypto'
 
 // ─── Fonts ───────────────────────────────────────────────────────────────────
@@ -93,13 +92,14 @@ export interface RenderInput {
   quality?: number
   /**
    * The AI-Extended background, already generated and canvas-sized — bytes
-   * of whatever `buildInpaintTarget()` + the inpaint service produced for this
-   * exact (photo, framing) combination, read back from the derived-asset
+   * of whatever `buildAiExtendTarget()` + Cloudinary produced for this exact
+   * (photo, framing, prompt) combination, read back from the derived-asset
    * cache by the caller (`handleRenderJob` in `src/jobs/worker.ts`).
    *
-   * This module does not call the inpaint service itself, on purpose: it is
-   * a pure, fast, synchronous-apart-from-image-decode compositor, and a
-   * network round trip to a GPU host has no business inside it. Only
+   * This module never calls Cloudinary itself, on purpose: it is a pure,
+   * fast, synchronous-apart-from-image-decode compositor, and a paid network
+   * round trip has no business inside it — least of all somewhere it could
+   * be re-entered per render and quietly re-bill. Only
    * consulted when `template.background.mode === 'ai_extend'`; ignored, not
    * an error, for every other mode. If that mode IS set but this is absent —
    * the background-fill job has not produced one yet, or never needed to —
@@ -179,7 +179,29 @@ export async function renderCreative(input: RenderInput): Promise<RenderOutput> 
     await drawLayer(ctx, layer, renderW, renderH, input.variables, framing, template)
   }
 
-  drawSubject(ctx, image, framing.crop, renderW, renderH)
+  // With an AI-extended background the subject is NOT drawn again — that
+  // background already contains this photo, and re-drawing it is what put a
+  // visible rectangle around the subject.
+  //
+  // Worth being explicit, because the instinct is the opposite. Cloudinary's
+  // `c_lpad` does not regenerate the photo; it places the uploaded pixels
+  // verbatim and invents only the padding around them, so its output is
+  // already "original photo + seamless surround" as a single, consistently
+  // encoded image. Painting our own copy of the photo over that means two
+  // encodings of the same pixels meeting along an edge — and they never match
+  // exactly, so the boundary shows as a faint rule no amount of alignment
+  // removes. Every previous attempt here (full-resolution backgrounds, exact
+  // integer offsets, a 2px edge hold-back) reduced that line without ever
+  // eliminating it, because the mismatch is inherent to compositing two
+  // encodings, not to their geometry.
+  //
+  // The product image is still never AI-modified, which is what the promise
+  // in the UI actually means: those pixels are the ones uploaded, not
+  // generated. They do carry one extra JPEG round trip, which is the price
+  // of a seamless join and is invisible next to a visible seam.
+  if (!precomputedBackground) {
+    drawSubject(ctx, image, framing.crop, renderW, renderH)
+  }
 
   for (const layer of above) {
     await drawLayer(ctx, layer, renderW, renderH, input.variables, framing, template)
@@ -254,7 +276,7 @@ function drawBackground(
       ctx.fillRect(0, 0, width, height)
       if (precomputedBackground) {
         // Already canvas-sized — it was generated FROM this exact canvas (see
-        // `buildInpaintTarget`), so this is a plain scale-to-fit, not the
+        // `buildAiExtendTarget`), so this is a plain scale-to-fit, not the
         // crop-region remapping the other modes need.
         ctx.save()
         ctx.drawImage(precomputedBackground as any, 0, 0, width, height)
@@ -405,7 +427,7 @@ interface PlacedRect {
 /**
  * Where `drawSubject` places the photo on the canvas — the intersection of
  * the crop with the real image, mapped to its proportional slice of the
- * destination. Pulled out on its own because `buildInpaintTarget` below
+ * destination. Pulled out on its own because `buildAiExtendTarget` below
  * needs the EXACT same rectangle for its mask: the mask marks "protect" over
  * precisely the pixels the photo actually occupies, and computing that
  * separately would risk the two drifting apart by a rounding error at the
@@ -457,32 +479,69 @@ function drawSubject(
   image: Awaited<ReturnType<typeof loadImage>>,
   crop: CropBox,
   width: number,
-  height: number
+  height: number,
+  /**
+   * Pixels to hold back from every edge of the drawn photo, in render-surface
+   * pixels. Only ever non-zero for `ai_extend`, and only because that mode
+   * has something correct to put there.
+   *
+   * The photo's destination rectangle lands on fractional coordinates, so its
+   * outermost column and row get antialiased against whatever is beneath —
+   * producing a faint dark rule along the edge that reads as a hairline
+   * border around the subject. Everywhere else that blend is invisible
+   * because the background behind it is unrelated. Under `ai_extend` the
+   * background is Cloudinary's own copy of this same photo, aligned to the
+   * same rectangle, so surrendering two pixels shows the identical content
+   * with none of the edge blending. Interior pixels are untouched, which is
+   * what the "original is never modified" guarantee is actually about.
+   */
+  insetPx = 0
 ): void {
   const placed = placedRect(image, crop, width, height)
   if (!placed) return
 
+  const inset = Math.max(0, Math.min(insetPx, Math.floor(Math.min(placed.width, placed.height) / 4)))
+  if (inset === 0) {
+    ctx.drawImage(
+      image as any,
+      placed.sourceX,
+      placed.sourceY,
+      placed.sourceWidth,
+      placed.sourceHeight,
+      placed.x,
+      placed.y,
+      placed.width,
+      placed.height
+    )
+    return
+  }
+
+  // Source and destination shrink together, so the photo keeps its scale and
+  // position exactly — this trims the edge, it does not resize the subject.
+  const srcInsetX = (inset / placed.width) * placed.sourceWidth
+  const srcInsetY = (inset / placed.height) * placed.sourceHeight
+
   ctx.drawImage(
     image as any,
-    placed.sourceX,
-    placed.sourceY,
-    placed.sourceWidth,
-    placed.sourceHeight,
-    placed.x,
-    placed.y,
-    placed.width,
-    placed.height
+    placed.sourceX + srcInsetX,
+    placed.sourceY + srcInsetY,
+    placed.sourceWidth - srcInsetX * 2,
+    placed.sourceHeight - srcInsetY * 2,
+    placed.x + inset,
+    placed.y + inset,
+    placed.width - inset * 2,
+    placed.height - inset * 2
   )
 }
 
-// ─── Inpaint target (AI Extend) ─────────────────────────────────────────────
+// ─── AI Extend target ───────────────────────────────────────────────────────
 
 /**
  * How much of the canvas a photo's solved crop leaves outside itself, without
- * paying for the padded-image/mask encode `buildInpaintTarget` does. Used to
- * decide WHETHER a `background_fill` job is even needed and to compute its
- * cache key — both need only the number, not the pixels — before committing
- * to building them.
+ * paying for the image encode `buildAiExtendTarget` does. Used to
+ * decide WHETHER a `background_fill` job is even needed (each one costs paid
+ * Cloudinary credits) and to compute its cache key — both need only the number,
+ * not the pixels — before committing to building them.
  */
 export async function computeOverflow(
   source: Buffer,
@@ -514,7 +573,7 @@ export function hasOverflow(overflow: FramingResult['overflow']): boolean {
  * job deciding whether it needs to wait on one) — computed here once so the
  * two can never drift apart from re-deriving it slightly differently.
  */
-export function inpaintCacheKind(overflow: FramingResult['overflow'], prompt: string): string {
+export function aiExtendCacheKind(overflow: FramingResult['overflow'], prompt: string): string {
   const left = Math.max(0, Math.round(overflow.left))
   const top = Math.max(0, Math.round(overflow.top))
   const right = Math.max(0, Math.round(overflow.right))
@@ -527,37 +586,45 @@ export function inpaintCacheKind(overflow: FramingResult['overflow'], prompt: st
   return `aiextend_${left}_${top}_${right}_${bottom}_${promptFingerprint}`
 }
 
-export interface InpaintTarget {
-  /** Canvas-sized JPEG: the photo placed per the template's own framing, blank white elsewhere. */
-  paddedImage: Buffer
-  /** Canvas-sized, feathered grayscale PNG mask: white = generate, black = protect. */
-  mask: Buffer
-  /** From the same `solveFraming()` call — callers use this as part of the cache key. */
+export interface AiExtendTarget {
+  /**
+   * The cropped photo ALONE, at the size it will occupy on the canvas — not
+   * a padded canvas. Cloudinary's `b_gen_fill` generates into padding that
+   * ITS OWN `c_pad` adds; handed a canvas whose empty area is already white
+   * pixels it fills nothing, because nothing tells it those pixels are
+   * empty. See the module doc in `src/services/cloudinary-service.ts`.
+   */
+  photo: Buffer
+  /** Canvas to pad out to. */
+  canvasWidth: number
+  canvasHeight: number
+  /** Where the photo sits within that canvas, and how big it lands. */
+  offsetX: number
+  offsetY: number
+  placedWidth: number
+  placedHeight: number
+  /** From the same `solveFraming()` call — part of the cache key. */
   overflow: FramingResult['overflow']
-  width: number
-  height: number
 }
 
 /**
- * Build the two images `services/inpaint-service` needs: the photo placed
- * exactly where this template's own framing puts it, and a mask marking
- * everywhere else as generate-me. Returns `null` when the crop already fills
- * the canvas — there is nothing to inpaint, so no service call is worth
- * making.
+ * Work out exactly what Cloudinary needs to extend this photo to the full
+ * canvas: the cropped photo on its own, plus where it lands. Returns `null`
+ * when the crop already covers the canvas — nothing to fill, and every call
+ * avoided is paid credits not spent.
  *
  * Runs the SAME `solveFraming()` this module always uses for the real render
  * (see the module doc comment — one framing implementation, not two that can
- * disagree), so what the model is asked to extend from is pixel-identical to
- * where the photo actually ends up. Solving it independently here, even
- * correctly, would drift out of sync with the render the moment either one's
- * inputs changed without the other being re-run.
+ * disagree), so the padding Cloudinary fills lines up exactly with where the
+ * subject is later drawn. Solving it independently here, even correctly,
+ * would drift out of sync the moment either one's inputs changed without the
+ * other being re-run.
  */
-export async function buildInpaintTarget(
+export async function buildAiExtendTarget(
   source: Buffer,
   vision: VisionMetadata | null,
-  template: TemplateDocument,
-  featherPx = 12
-): Promise<InpaintTarget | null> {
+  template: TemplateDocument
+): Promise<AiExtendTarget | null> {
   const image = await loadImage(source)
   const subject = toFramingSubject(vision, { width: image.width, height: image.height })
   const framing = solveFraming(subject, template.framing, {
@@ -565,42 +632,57 @@ export async function buildInpaintTarget(
     height: template.canvas.height,
   })
 
-  const { left, top, right, bottom } = framing.overflow
-  if (left <= 0.5 && top <= 0.5 && right <= 0.5 && bottom <= 0.5) return null
+  if (!hasOverflow(framing.overflow)) return null
 
-  const width = template.canvas.width
-  const height = template.canvas.height
+  // Built at the RENDER surface's resolution — canvas x supersample — not at
+  // the canvas's own size.
+  //
+  // `renderCreative` draws everything onto a supersampled surface and
+  // downscales once at the end. A background produced at plain canvas size
+  // therefore gets upscaled on the way in and downscaled on the way out,
+  // arriving visibly softer than the subject, which is drawn straight from
+  // the multi-thousand-pixel original. The eye reads that sharpness step at
+  // the subject's edge as a pasted-on rectangle even when the generated
+  // content itself is a perfect continuation.
+  //
+  // Matching the render surface means the background is drawn 1:1, and both
+  // it and the subject take exactly one downscale together.
+  const supersample = Math.max(1, Math.min(3, config.render.supersample))
+  const canvasWidth = Math.round(template.canvas.width * supersample)
+  const canvasHeight = Math.round(template.canvas.height * supersample)
 
-  const canvas = createCanvas(width, height)
-  const ctx = canvas.getContext('2d')
-  ctx.fillStyle = '#ffffff'
-  ctx.fillRect(0, 0, width, height)
-  drawSubject(ctx, image, framing.crop, width, height)
-  const paddedImage = await canvas.encode('jpeg', 95)
+  const placed = placedRect(image, framing.crop, canvasWidth, canvasHeight)
+  if (!placed) return null
 
-  const maskCanvas = createCanvas(width, height)
-  const maskCtx = maskCanvas.getContext('2d')
-  maskCtx.fillStyle = '#ffffff'
-  maskCtx.fillRect(0, 0, width, height)
-  const placed = placedRect(image, framing.crop, width, height)
-  if (placed) {
-    maskCtx.fillStyle = '#000000'
-    maskCtx.fillRect(placed.x, placed.y, placed.width, placed.height)
+  // The photo alone, cropped exactly as the render will crop it and sized to
+  // the box it will occupy — so Cloudinary's only job is to pad around it.
+  const cut = createCanvas(Math.max(1, Math.round(placed.width)), Math.max(1, Math.round(placed.height)))
+  const cutCtx = cut.getContext('2d')
+  cutCtx.imageSmoothingEnabled = true
+  cutCtx.imageSmoothingQuality = 'high'
+  cutCtx.drawImage(
+    image as any,
+    placed.sourceX,
+    placed.sourceY,
+    placed.sourceWidth,
+    placed.sourceHeight,
+    0,
+    0,
+    cut.width,
+    cut.height
+  )
+  const photo = await cut.encode('jpeg', 95)
+
+  return {
+    photo,
+    canvasWidth,
+    canvasHeight,
+    offsetX: Math.round(placed.x),
+    offsetY: Math.round(placed.y),
+    placedWidth: cut.width,
+    placedHeight: cut.height,
+    overflow: framing.overflow,
   }
-  const hardMask = await maskCanvas.encode('png')
-
-  // A hard cutoff reads as a visible seam even when the generated content is
-  // a good match. Canvas has no blur primitive (see `drawBlurredFill`
-  // above), so the softening is done with `sharp`, already a dependency —
-  // a real Gaussian blur here, turning the cutoff into a gradient the
-  // pipeline blends across instead of a line it has to match exactly.
-  const mask = await sharp(hardMask)
-    .grayscale()
-    .blur(Math.max(0.3, featherPx / 3))
-    .png()
-    .toBuffer()
-
-  return { paddedImage, mask, overflow: framing.overflow, width, height }
 }
 
 // ─── Layers ──────────────────────────────────────────────────────────────────

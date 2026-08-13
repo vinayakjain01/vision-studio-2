@@ -11,12 +11,12 @@
 import { analyzeStoredImage, getUsableAnalysis, propagateVisionStatus } from '@/services/vision-service'
 import {
   renderCreative,
-  buildInpaintTarget,
+  buildAiExtendTarget,
   computeOverflow,
   hasOverflow,
-  inpaintCacheKind,
+  aiExtendCacheKind,
 } from '@/render/compositor'
-import { inpaint } from '@/services/inpaint-client'
+import { generativeFill } from '@/services/cloudinary-service'
 import { creatives, images, products, templates, visionAnalyses } from '@/db/repositories'
 import {
   readMedia,
@@ -44,7 +44,31 @@ export interface HandlerResult {
  * hope", it's "wait for the `background_fill` job that's already running".
  */
 export class BackgroundNotReadyError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    /**
+     * True when the `background_fill` job this render depends on is alive —
+     * pending, claimed or running. The waiting render then costs no retry
+     * attempt, because waiting on healthy work in progress is not a failed
+     * attempt at anything.
+     *
+     * This is what makes bulk runs work. Attempts were previously consumed
+     * on every check against a budget sized for ONE Cloudinary call
+     * (77 tries x 5s ≈ 6 minutes). A single folder finishes inside that; a
+     * 554-photo catalogue does not, because the fills are processed a few at
+     * a time and the queue is over an hour deep. Measured on exactly that
+     * run: 469 renders failed at 77/77 "gave up waiting" while their
+     * dependencies were still queued and NOT ONE background_fill had failed.
+     * The renders were not broken and neither was Cloudinary — the patience
+     * budget was simply measured against the wrong thing.
+     *
+     * Unbounded waiting is safe here precisely because it is conditional on
+     * the dependency being alive: that job carries its own `maxAttempts`, so
+     * it must reach `completed` or `failed` in bounded time, and either
+     * outcome releases this render.
+     */
+    readonly dependencyActive: boolean
+  ) {
     super(message)
     this.name = 'BackgroundNotReadyError'
   }
@@ -145,15 +169,38 @@ export async function handleRenderJob(
   if (template.document.background.mode === 'ai_extend') {
     const overflow = await computeOverflow(source, metadata, template.document)
     if (hasOverflow(overflow)) {
-      const kind = inpaintCacheKind(overflow, template.document.background.backdropPrompt)
+      const kind = aiExtendCacheKind(overflow, template.document.background.backdropPrompt)
       const key = derivedKey(sourceHash, kind, 'jpg')
 
       if (await mediaExists('derived', key)) {
         precomputedBackground = await readMedia('derived', key)
       } else {
-        ensureBackgroundFillQueued(payload)
+        // Ask what actually happened to the fill this render needs, rather
+        // than inferring it from elapsed time. Three genuinely different
+        // situations hide behind "the file isn't there yet".
+        const dedupeKey = backgroundFillDedupeKey(payload)
+        const dependency = queue.findLatestByDedupeKey(dedupeKey)
+        const alive =
+          dependency !== null &&
+          (dependency.status === 'pending' ||
+            dependency.status === 'claimed' ||
+            dependency.status === 'running')
+
+        if (dependency && (dependency.status === 'failed' || dependency.status === 'cancelled')) {
+          // The fill genuinely failed. Surface ITS reason — "gave up waiting"
+          // told the operator nothing about why, which on a large run is the
+          // difference between a Cloudinary problem they must act on and a
+          // queue that simply needed longer.
+          throw new Error(
+            `AI-extended background could not be generated: ${dependency.error ?? 'unknown error'}`
+          )
+        }
+
+        if (!alive) ensureBackgroundFillQueued(payload)
+
         throw new BackgroundNotReadyError(
-          `waiting for AI-extended background (template ${templateId}, photo ${sourceHash.slice(0, 12)})`
+          `waiting for AI-extended background (template ${templateId}, photo ${sourceHash.slice(0, 12)})`,
+          alive
         )
       }
     }
@@ -222,12 +269,18 @@ export async function handleRenderJob(
  * FRESH attempt on every single check once the last one failed. The live
  * dedupe index (enforced at insert) only blocks while a job is pending,
  * claimed or running; once one fails, a bare `enqueue` call would insert a
- * brand new one on the very next check, turning "the inpaint service is
- * down" into a retry storm against exactly the service that just said no.
- * `findRecent` catches the failed case too and backs off instead.
+ * brand new one on the very next check, turning "Cloudinary just refused"
+ * into a retry storm against exactly the API that said no — which here is
+ * also a billing question, not only a politeness one. `findRecent` catches
+ * the failed case too and backs off instead.
  */
+/** One key per (photo, template) — see `ensureBackgroundFillQueued`. */
+function backgroundFillDedupeKey(payload: RenderJobPayload): string {
+  return `bgfill:${payload.sourceHash}:${payload.templateId}`
+}
+
 function ensureBackgroundFillQueued(payload: RenderJobPayload): void {
-  const dedupeKey = `bgfill:${payload.sourceHash}:${payload.templateId}`
+  const dedupeKey = backgroundFillDedupeKey(payload)
   const recent = queue.findRecent(dedupeKey, queue.BACKGROUND_FILL_RETRY_COOLDOWN_MS)
   if (recent) return
 
@@ -253,15 +306,15 @@ function ensureBackgroundFillQueued(payload: RenderJobPayload): void {
 // ─── Background fill (AI Extend) ────────────────────────────────────────────
 
 /**
- * Generate and cache one photo's AI-Extended background. Runs on its own
- * dedicated worker slots (`src/jobs/pool.ts`), never the vision/render pool —
- * this is a network call to a GPU-hosted service, not local CPU work.
+ * Generate and cache one photo's AI-Extended background via Cloudinary. Runs
+ * on its own dedicated worker slots (`src/jobs/pool.ts`), never the
+ * vision/render pool — this is a remote API call, not local CPU work.
  *
- * Idempotent by construction: the derived-asset cache is checked again right
- * before the (comparatively expensive) service call, so if two render jobs
- * raced to queue this for the same photo+template, the second `background_fill`
- * job to actually run finds the first one's result already cached and does
- * nothing further.
+ * Idempotent by construction, and here that is a MONEY property rather than
+ * just a tidiness one: the derived-asset cache is re-checked immediately
+ * before the call, so if two render jobs raced to queue this for the same
+ * photo+template, the second one to actually run finds the first's result
+ * cached and spends nothing. Every generative fill is billed.
  */
 export async function handleBackgroundFillJob(
   payload: BackgroundFillJobPayload
@@ -283,12 +336,12 @@ export async function handleBackgroundFillJob(
   const { metadata } = getUsableAnalysis(sourceHash)
   const source = await readMedia('originals', image.storageKey)
 
-  const target = await buildInpaintTarget(source, metadata, template.document)
+  const target = await buildAiExtendTarget(source, metadata, template.document)
   if (!target) {
     return { skipped: true, reason: 'no overflow to fill' }
   }
 
-  const kind = inpaintCacheKind(target.overflow, template.document.background.backdropPrompt)
+  const kind = aiExtendCacheKind(target.overflow, template.document.background.backdropPrompt)
   const key = derivedKey(sourceHash, kind, 'jpg')
 
   if (await mediaExists('derived', key)) {
@@ -296,9 +349,18 @@ export async function handleBackgroundFillJob(
   }
 
   const prompt = template.document.background.backdropPrompt?.trim() || undefined
-  const result = await inpaint({ image: target.paddedImage, mask: target.mask, prompt })
+  const result = await generativeFill({
+    photo: target.photo,
+    canvasWidth: target.canvasWidth,
+    canvasHeight: target.canvasHeight,
+    offsetX: target.offsetX,
+    offsetY: target.offsetY,
+    placedWidth: target.placedWidth,
+    placedHeight: target.placedHeight,
+    prompt,
+  })
 
-  await putDerived(sourceHash, kind, 'jpg', result.image)
+  await putDerived(sourceHash, kind, 'jpg', result.bytes)
 
-  return { cached: true, key, width: target.width, height: target.height }
+  return { cached: true, key, width: result.width, height: result.height, billed: true }
 }

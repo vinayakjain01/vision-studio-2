@@ -82,7 +82,7 @@ class WorkerPool {
 
     const visionSlots = config.jobs.visionConcurrency
     const renderSlots = config.jobs.renderConcurrency
-    const inpaintSlots = config.inpaint.jobConcurrency
+    const backgroundFillSlots = config.cloudinary.jobConcurrency
 
     const plan: { id: string; kinds: JobKind[] }[] = []
     for (let i = 0; i < visionSlots; i++) {
@@ -94,14 +94,14 @@ class WorkerPool {
       plan.push({ id: `render-${i}`, kinds: ['render'] })
     }
     // Deliberately its own slot group, never folded into the vision/render
-    // groups above: this workload is a network call to a GPU host, not local
-    // CPU work, and sizing it off `visionSlots`/`renderSlots` (or letting it
-    // share their slots as overflow, the way vision slots pick up renders)
-    // would size a remote-GPU-bound queue by local-CPU-bound logic. See
-    // `config.inpaint.jobConcurrency` for why CPU test mode hard-caps this
-    // at 1 regardless of what's configured.
-    for (let i = 0; i < inpaintSlots; i++) {
-      plan.push({ id: `inpaint-${i}`, kinds: ['background_fill'] })
+    // groups above: this workload is a remote API call to Cloudinary, not
+    // local CPU work, so sizing it off `visionSlots`/`renderSlots` — or
+    // letting it share their slots as overflow, the way vision slots pick up
+    // renders — would size a network-bound, rate-limited, PAID queue by
+    // local-CPU-bound logic. Kept small by default for the same reason; see
+    // `config.cloudinary.jobConcurrency`.
+    for (let i = 0; i < backgroundFillSlots; i++) {
+      plan.push({ id: `bgfill-${i}`, kinds: ['background_fill'] })
     }
 
     // Spawned one at a time rather than all at once. A vision worker's first
@@ -125,7 +125,7 @@ class WorkerPool {
 
     console.log(
       `[pool] starting — ${visionSlots} vision worker(s), ${renderSlots} render worker(s), ` +
-      `${inpaintSlots} inpaint worker(s) (${config.inpaint.device}), ` +
+      `${backgroundFillSlots} background-fill worker(s), ` +
       `${config.vision.ortThreads} ORT thread(s) each, staggered`
     )
   }

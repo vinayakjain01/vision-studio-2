@@ -44,6 +44,62 @@ export interface ShotContext {
 /** Anchors below this confidence are treated as not observed. */
 const ANCHOR_FLOOR = 0.25
 
+/**
+ * The keypoints that constitute EVIDENCE OF A HEAD, as opposed to a guess
+ * about where one would be.
+ *
+ * This is the distinction between a half-body shot of a model and a
+ * garment-only shot, and getting it wrong is not subtle: neckline-down crops
+ * were classified `half_body` and handed head-relative framing meant for
+ * photos with a head in them.
+ *
+ * The trap is that head ANCHORS are always populated, even when nothing
+ * head-like was seen. With no face detection, `eye_line` and `chin` are
+ * extrapolated from the person box — a plausible guess at where a face would
+ * sit above a torso — and `head_top` comes from the top of the person matte,
+ * which on a neckline-down crop is the collar. All three exist, all three sit
+ * inside the frame, and none of them means a head is present. Anchors are
+ * built to be always-available for FRAMING; they are the wrong evidence for
+ * deciding whether the thing they describe is actually there.
+ *
+ * A pose keypoint is the right evidence, because the model can only mark one
+ * `visible` where it genuinely resolves that feature. Measured on the two
+ * photos that prompted this: an on-model half-body shot scored nose 0.996 /
+ * eyes 0.99 / ear 0.975, while the garment-only crop beside it scored nose
+ * 0.019 / eyes 0.005 / ears 0.044 — and placed them at NEGATIVE y, i.e. the
+ * model extrapolating a head above the frame. Three orders of magnitude
+ * apart, not a threshold that needed tuning.
+ *
+ * Same reasoning as `anklesVisible` below, which already distrusts a `feet`
+ * anchor without a real knee keypoint behind it.
+ */
+const HEAD_KEYPOINTS = ['nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear'] as const
+
+/**
+ * Score a head keypoint must clear to count as EVIDENCE OF A HEAD —
+ * deliberately far above the engine-wide `keypointScoreThreshold` (0.3) that
+ * `Keypoint.visible` encodes.
+ *
+ * The general threshold is tuned for "where is this joint" on a body already
+ * known to be there. Asking instead "is there a head at all" is a different
+ * question with a much worse cost of being wrong, and the pose model does
+ * hallucinate a face onto textured fabric: a garment detail crop with no head
+ * anywhere in frame scored nose 0.538 / ear 0.388 and passed the 0.3 gate.
+ *
+ * Chosen from the catalog rather than by feel. Across 556 analysed photos,
+ * the best head-keypoint score splits cleanly:
+ *
+ *   with a detected face (n=468):  min 0.602, p5 0.921, median 0.991
+ *   with no face        (n=88):   median 0.054, p75 0.154, p90 0.538
+ *
+ * 0.7 sits in the empty space between the false positives and the genuine
+ * heads: it rejects the 0.538 hallucination above while still admitting the
+ * eight no-face photos scoring higher, which are models shot from behind or
+ * in profile. Photos WITH a face are unaffected either way — they qualify
+ * through the face detector, independently of this number.
+ */
+const HEAD_KEYPOINT_FLOOR = 0.7
+
 export function classifyShot(ctx: ShotContext): ShotClassification {
   const signals = computeSignals(ctx)
 
@@ -105,11 +161,15 @@ export function classifyShot(ctx: ShotContext): ShotClassification {
   }
 
   if (signals.anklesVisible && !signals.headVisible) {
-    // Legs and feet but no head — a lower-body crop, framed on the garment.
+    // Legs and feet but no head — a hem-and-shoes crop. `product_only`, not
+    // `three_quarter`: the old answer said in its own reasoning that
+    // head-relative framing would not apply, while returning a type that
+    // `HEAD_FRAMEABLE_SHOTS` lists as head-frameable, so the framing it
+    // warned about was applied anyway.
     return decide(
-      'three_quarter',
-      0.6,
-      'Ankles visible but the head is out of frame — a lower-body crop; head-relative framing will not apply.'
+      'product_only',
+      0.75,
+      'Legs and feet in frame but no face or hair detected — a lower-body garment crop, not an on-model shot.'
     )
   }
 
@@ -152,12 +212,18 @@ export function classifyShot(ctx: ShotContext): ShotClassification {
     )
   }
 
-  // Person detected but no usable head — a torso or garment crop.
-  if (signals.personHeightRatio > 0.8) {
+  // A body is in frame but no head was ever SEEN — the model's face and hair
+  // are outside the crop, so what this photograph actually shows is the
+  // garment. Classified `product_only` rather than `detail`/`unknown` because
+  // that is the distinction the templates act on: head-relative framing and
+  // head-space rules are meaningless here and must not be applied, and a
+  // batch aimed at on-model shots should not pick this up. See
+  // `supportsHeadFraming` below.
+  if (signals.shouldersVisible || signals.hipsVisible || signals.personHeightRatio > 0.5) {
     return decide(
-      'detail',
-      0.55,
-      'A person was detected but no head landmarks are in frame — a garment or body-detail crop.'
+      'product_only',
+      0.8,
+      'A body is in frame but no face or hair was detected — the crop starts below the head, so this is a garment-only shot rather than an on-model one.'
     )
   }
 
@@ -175,6 +241,19 @@ function computeSignals(ctx: ShotContext): ShotSignals {
     return !!anchor && anchor.confidence >= ANCHOR_FLOOR && inFrame(anchor, ctx)
   }
 
+  // Both conditions, and both earn their place. `visible` carries "projected
+  // inside the image", which alone rejects the common failure of a head
+  // extrapolated above a torso crop (measured at y = -67 on one such photo).
+  // The explicit floor then rejects the opposite failure — a low-confidence
+  // face hallucinated onto patterned fabric, which `visible` admits because
+  // it only encodes the much lower engine-wide threshold.
+  const headKeypointSeen =
+    ctx.person != null &&
+    HEAD_KEYPOINTS.some(name => {
+      const kp = ctx.person!.keypoints[name]
+      return kp?.visible === true && kp.score >= HEAD_KEYPOINT_FLOOR
+    })
+
   const faceHeight = ctx.face ? ctx.face.box.bottom - ctx.face.box.top : 0
   const personHeight = ctx.person ? ctx.person.box.bottom - ctx.person.box.top : 0
 
@@ -184,9 +263,16 @@ function computeSignals(ctx: ShotContext): ShotSignals {
   return {
     hasPerson: ctx.person !== null,
     hasFace: ctx.face !== null,
-    // The head counts as visible when the crown is at or below the top edge —
-    // an extrapolated crown above the frame means the head is cropped.
-    headVisible: has('head_top') || has('eye_line'),
+    // A head counts as visible only when one was actually SEEN: a face
+    // detection, or a head keypoint the pose model resolved (see
+    // HEAD_KEYPOINTS). Trusting the always-populated head ANCHORS here is
+    // what let neckline-down garment crops pass as half-body shots.
+    //
+    // Both paths matter. The face detector alone would demote every
+    // back-facing shot in the catalog — 77 of 544 photos here have no face
+    // detection, and many are simply models photographed from behind, whose
+    // ears and hair the pose model still resolves.
+    headVisible: ctx.face !== null || headKeypointSeen,
     shouldersVisible: has('shoulder_center') || has('shoulder_left') || has('shoulder_right'),
     hipsVisible: has('hip_center'),
     kneesVisible: has('knee_center'),

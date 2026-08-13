@@ -236,8 +236,8 @@ CREATE INDEX IF NOT EXISTS idx_batches_created ON batches (created_at DESC);
 
 CREATE TABLE IF NOT EXISTS jobs (
   id              TEXT PRIMARY KEY,
-  -- 'background_fill' is dispatched to a separate GPU-hosted inpaint service,
-  -- never to the local vision/render worker pool — see src/jobs/pool.ts.
+  -- 'background_fill' calls a remote API (Cloudinary) on its own worker
+  -- slots, never the local vision/render pool — see src/jobs/pool.ts.
   kind            TEXT NOT NULL CHECK (kind IN ('vision', 'render', 'background_fill')),
   status          TEXT NOT NULL DEFAULT 'pending'
                     CHECK (status IN ('pending', 'claimed', 'running', 'completed', 'failed', 'cancelled')),

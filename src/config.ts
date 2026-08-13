@@ -4,12 +4,16 @@
  * Every value has a working default so the application runs with no .env file.
  * Nearly nothing here reaches out to a network service — Vision Studio is
  * standalone by design (no OAuth, no hosted database, no media CDN) — with one
- * deliberate exception: the "AI Extend" background mode calls a self-hosted
- * SDXL inpainting service (`services/inpaint-service`, a separate deployable,
- * GPU-hosted in production) to outpaint a photo's background, because that is
- * a genuinely hard image problem this app has no local model for. It is
- * entirely opt-in per template and never falls back to a plain fill silently —
- * see `INPAINT_JOB_FAILED` handling in `src/jobs/worker.ts`.
+ * deliberate exception: the "AI Extend" background mode calls Cloudinary's
+ * generative-fill API to extend a photo's background into the empty canvas
+ * around it, because that is a genuinely hard image problem this app has no
+ * local model for. It is entirely opt-in per template and never falls back to
+ * a plain fill silently — see `CloudinaryServiceError` handling in
+ * `src/jobs/worker.ts`.
+ *
+ * Every call costs paid credits, which is why the result is cached as a
+ * derived asset keyed by (photo hash, canvas, padding, prompt) — see
+ * `aiExtendCacheKind` in `src/render/compositor.ts`.
  *
  * Server-only. Do not import from a client component — it touches `path` and
  * `process.env` values that are not `NEXT_PUBLIC_`-prefixed.
@@ -119,43 +123,45 @@ export const config = {
     jpegQuality: int(process.env.RENDER_JPEG_QUALITY, 95),
   },
 
-  inpaint: {
-    /** The self-hosted inpaint-service's own base URL — never a public endpoint. */
-    serviceUrl: process.env.INPAINT_SERVICE_URL || 'http://localhost:8001',
+  cloudinary: {
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME || process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || '',
+    apiKey: process.env.CLOUDINARY_API_KEY ?? '',
+    apiSecret: process.env.CLOUDINARY_API_SECRET ?? '',
+    get enabled() {
+      return Boolean(this.cloudName && this.apiKey && this.apiSecret)
+    },
     /**
-     * Mirrors the SAME env var the Python service reads (`INPAINT_DEVICE`) —
-     * set identically on both when running the CPU test setup described in
-     * docs/DEPLOY.md, so this side's own throttling stays in sync with what
-     * the service can actually deliver, without the two needing to ask each
-     * other over the wire.
+     * Separate from `jobs.renderConcurrency` on purpose. This work is a
+     * remote HTTP call, not local CPU, so it must not be sized off cores or
+     * take slots from the render pool. Kept low regardless: every call
+     * spends paid generative credits and Cloudinary rate-limits bursts, so
+     * the failure mode of setting it high is a bill and a 429, not just
+     * contention.
      */
-    device: process.env.INPAINT_DEVICE === 'cpu' ? ('cpu' as const) : ('cuda' as const),
+    jobConcurrency: Math.max(1, int(process.env.CLOUDINARY_JOB_CONCURRENCY, 4)),
     /**
-     * A hard cap, not a default: CPU inference runs on the SAME machine as the
-     * vision/render workers in the dev/test setup this mode implies, and a
-     * config value that could push it past 1 would defeat the entire point of
-     * giving this its own concurrency knob in the first place.
+     * Generative fill is a real diffusion job on Cloudinary's side, not a
+     * plain transformation — first request for a given derivation regularly
+     * takes 30-60s while it renders. This bounds a stuck request, not a slow
+     * one, so it sits well above the typical case.
      */
-    jobConcurrency:
-      process.env.INPAINT_DEVICE === 'cpu'
-        ? 1
-        : Math.max(1, int(process.env.INPAINT_JOB_CONCURRENCY, 2)),
+    requestTimeoutMs: int(process.env.CLOUDINARY_TIMEOUT_MS, 180_000),
     /**
-     * How long to wait for one generation before giving up on it.
+     * Longest edge the generated background may be produced at.
      *
-     * The GPU default is 180s, not the 60s it started as. 60s was sized for
-     * a fast datacentre card and turned every request on a modest GPU into a
-     * timeout — a Quadro P2000 takes ~75s for a single 768px SD inpaint, so
-     * the client was killing healthy requests the service went on to
-     * complete successfully, wasting the work and failing the batch. This
-     * needs to bound a HUNG service, not a slow one; a real hang is
-     * indistinguishable from slowness until the budget is comfortably past
-     * what any working GPU would take.
+     * Must be >= canvas longest edge x `render.supersample`, because the
+     * background is requested at the render surface's resolution rather than
+     * the canvas's — see `buildAiExtendTarget`. For the largest preset here
+     * (1920) at 2x that is 3840, so the default clears it.
+     *
+     * NOT a bandwidth knob. The renderer composites the original photo back
+     * over this background at the framing solver's exact rectangle; a
+     * background produced any smaller is both softer than the photo drawn
+     * over it and offset by rounding, which shows up as a visible rectangle
+     * around the subject. Below the required size the service warns rather
+     * than producing that silently.
      */
-    requestTimeoutMs: int(
-      process.env.INPAINT_TIMEOUT_MS,
-      process.env.INPAINT_DEVICE === 'cpu' ? 900_000 : 180_000
-    ),
+    maxUploadDim: int(process.env.CLOUDINARY_MAX_UPLOAD_DIM, 4096),
   },
 } as const
 

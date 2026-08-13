@@ -92,146 +92,47 @@ things that would change are:
 Ask when you're ready to move — it's a smaller change than this first
 deploy was.
 
-## AI Extend's inpaint service — a second, GPU-hosted service
+## AI Extend — Cloudinary generative fill
 
-The "AI Extend" background mode (per-template, opt-in — see the Framing/
-Canvas tab in the Template Builder) calls `services/inpaint-service`, a
-standalone FastAPI app that runs an SDXL inpainting model. Everything above
-this section describes the main app alone; this is genuinely a second
-deployable, not a feature flag inside the first one.
+The "AI Extend" background mode (per-template, opt-in — see the Framing or
+Canvas tab in the Template Builder) calls Cloudinary's generative-fill API to
+extend a photo's own backdrop into the empty canvas around it. Everything
+else in this app runs offline; this is the one outbound dependency, and the
+one that costs money.
 
-**Read this part first, same as the top of this file:**
+**Two things to know before turning it on:**
 
-- **This needs a real GPU.** Not the Render free plan, not the CPU
-  DigitalOcean droplet the rest of this app runs on. SDXL inference on CPU is
-  minutes per image — fine for the manual quality checks described below,
-  completely wrong for anything serving real traffic. If you don't have GPU
-  hardware yet, leave every template's background mode on "Plain" (the
-  default) or one of the other CPU-cheap modes (`edge_extend`, `blur_extend`)
-  — the rest of the app works exactly the same either way. AI Extend is
-  additive, not load-bearing.
-- **This endpoint must never be exposed to the public internet.** No
-  authentication is implemented in this task — same posture as the main app's
-  own "no login" warning above. It is meant to sit on a private/internal
-  network where only the main app can reach it (a docker-compose internal
-  network, a VPC, a firewall rule limiting the port to the main app's own
-  host) — never a port forwarded to the public internet, never a hostname in
-  public DNS.
-- **They are two separate services on purpose.** The main app's own worker
-  pool is sized for a laptop-class CPU box (see `src/config.ts`'s comments on
-  `JOB_VISION_CONCURRENCY`/`JOB_RENDER_CONCURRENCY`); the inpaint service
-  needs GPU memory and a completely different sizing story. Running them on
-  the same box would mean either starving the GPU service of VRAM or starving
-  the CPU workers of RAM, for no benefit — they don't share load, so there's
-  nothing to gain from sharing a host.
+- **Every generative fill spends paid Cloudinary credits.** Results are
+  cached as derived assets keyed by (photo hash, padding, prompt), so
+  re-rendering the same photo with the same template never re-calls the API —
+  but a new photo, a changed canvas, or an edited backdrop prompt is a new
+  billable derivation. A large first-time batch is a real charge.
+- **Nothing degrades silently.** If credentials are missing, credits are
+  exhausted, or Cloudinary rate-limits, the `background_fill` job fails
+  visibly and the render waits rather than quietly falling back to a flat
+  colour. Auth and credit failures are parked immediately rather than
+  retried, since no number of retries fixes either.
 
-### Running it on a small/laptop GPU
+### Setup
 
-Between "no GPU at all" and "a proper GPU host" there is a common middle
-case: a workstation or laptop with a modest NVIDIA card (4–6 GB VRAM). That
-**will** run this feature usefully, just not with the production checkpoint —
-SDXL inpainting needs roughly 8–10 GB of VRAM, and the standard workaround
-(CPU offload) wants several GB of free system RAM that such machines
-generally don't have spare either.
-
-Point the service at an SD2 inpainting checkpoint instead — smaller
-architecture, ~1.7 GB in fp16, same commercial-safe OpenRAIL++-M licence:
+Add to `.env.local` (never committed — see `.gitignore`):
 
 ```
-INPAINT_DEVICE=cuda
-INPAINT_MODEL_ID=stabilityai/stable-diffusion-2-inpainting
-INPAINT_MAX_DIM=768
+CLOUDINARY_CLOUD_NAME=your-cloud-name
+CLOUDINARY_API_KEY=...
+CLOUDINARY_API_SECRET=...
 ```
 
-Seconds per image rather than minutes, and enough to judge whether the
-extended backdrops are actually good before spending anything on hardware.
-Treat it as validation, not production: quality is a clear step below SDXL.
-Full details in `services/inpaint-service/README.md`.
+That is the whole deployment story: no second service, no GPU host, no
+docker-compose changes. The main app calls Cloudinary directly, so the same
+single container described above still runs everything.
 
-### Quality testing before you have a GPU
+`CLOUDINARY_JOB_CONCURRENCY` (default 2) bounds how many calls run at once.
+It is deliberately separate from `JOB_RENDER_CONCURRENCY`: this workload
+waits on a remote, rate-limited, billed API rather than local CPU, so sizing
+it off cores — or letting it borrow render slots — would be wrong in both
+directions.
 
-`INPAINT_DEVICE=cpu` runs the real model, the real pipeline, on CPU — no GPU
-required, no mocking. It exists specifically to answer "does the output
-actually look right" on a handful of real photos before committing to GPU
-hardware:
-
-```
-cd services/inpaint-service
-pip install -r requirements.txt
-INPAINT_DEVICE=cpu uvicorn main:app --host 0.0.0.0 --port 8001
-```
-
-Then point the main app's `.env.local` at it:
-
-```
-INPAINT_SERVICE_URL=http://localhost:8001
-INPAINT_DEVICE=cpu
-```
-
-Both apps read `INPAINT_DEVICE` independently — the Python service to decide
-which device to load the model onto, the Node app to hard-cap its own
-`INPAINT_JOB_CONCURRENCY` at 1 (see `src/config.ts`) so it doesn't fire a
-second inpaint request at a service that can only usefully do one at a time.
-Set it the same on both when testing this way.
-
-Expect minutes per image, and expect the service to log a loud warning on
-startup reminding you this isn't a production configuration. That warning is
-not decorative — **never point a deployed app's `INPAINT_SERVICE_URL` at an
-instance running in this mode.**
-
-### Production: docker-compose, main app + GPU inpaint service
-
-Once GPU hardware exists (a GPU-enabled cloud VM, a machine with an NVIDIA
-card and the NVIDIA driver + Container Toolkit installed), the two services
-run side by side, main app talking to the inpaint service over the compose
-network by service name — never a publicly routable address:
-
-```yaml
-# docker-compose.yml — illustrative; adjust volumes/ports to your host.
-services:
-  vision-studio:
-    build: .
-    ports:
-      - "3000:3000"          # the only port that should ever reach the public internet
-    volumes:
-      - vision-studio-data:/app/data
-    environment:
-      INPAINT_SERVICE_URL: http://inpaint-service:8001   # internal DNS name, not a public host
-      INPAINT_DEVICE: cuda
-      JOB_VISION_CONCURRENCY: "1"
-      JOB_RENDER_CONCURRENCY: "1"
-      INPAINT_JOB_CONCURRENCY: "2"
-    depends_on:
-      - inpaint-service
-
-  inpaint-service:
-    build: ./services/inpaint-service
-    # No `ports:` entry — not reachable from outside the compose network at
-    # all, only from `vision-studio` over the internal DNS name above.
-    volumes:
-      - inpaint-models:/models   # several GB of weights; keep across restarts
-    environment:
-      INPAINT_DEVICE: cuda
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-
-volumes:
-  vision-studio-data:
-  inpaint-models:
-```
-
-`docker compose up` builds and starts both. The first start on the
-inpaint-service side downloads the model (several GB) into the `inpaint-models`
-volume — that happens once, not on every restart.
-
-If your GPU host is a *separate* machine from the one running the main app
-(common — a CPU droplet for the app, a GPU instance elsewhere for
-inference), replace the compose internal DNS name with that machine's
-private/internal IP or hostname reachable only over a VPC or VPN — still
-never a public one — and make sure whatever firewall sits in front of port
-8001 allows only the main app's host, nothing else.
+The Template Builder shows whether Cloudinary is configured at the point
+where AI Extend is selected, so a missing credential surfaces before a batch
+runs rather than as a pile of failed jobs afterwards.

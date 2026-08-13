@@ -1,5 +1,5 @@
--- Widen `jobs.kind` to accept 'background_fill' (the self-hosted SDXL
--- inpainting job, dispatched to a separate GPU-hosted service — see
+-- Widen `jobs.kind` to accept 'background_fill' (the AI-Extend background
+-- job, dispatched to its own worker slots that call a remote API — see
 -- src/jobs/pool.ts — never to the local vision/render worker pool), and add
 -- `available_at` so a job can be deferred to a future time without either
 -- blocking a worker on it or burning retry attempts in a hot loop.

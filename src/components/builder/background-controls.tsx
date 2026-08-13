@@ -3,7 +3,7 @@
 import * as React from 'react'
 import type { BackgroundMode, BackgroundSettings } from '@/templates/types'
 import { Field, Input, Select, Slider } from '@/components/ui/primitives'
-import { InpaintStatus } from './inpaint-status'
+import { AiExtendStatus } from './ai-extend-status'
 
 const MODE_HINTS: Record<BackgroundMode, string> = {
   solid: 'A flat colour. Visible only where the crop does not cover the canvas.',
@@ -11,8 +11,10 @@ const MODE_HINTS: Record<BackgroundMode, string> = {
   blur_extend:
     'A blurred, zoomed copy of the photo fills the frame behind the subject. Use with the "allow" overflow policy so exposed edges blend rather than showing a hard band.',
   edge_extend: 'Stretches the crop to fill. Cheaper than blur; works on plain seamless backdrops.',
+  // Wording matched deliberately to the sibling CatalogStudio project's own
+  // "Fit" control, so the same concept reads identically across both tools.
   ai_extend:
-    'AI-extends the photo’s own studio environment — backdrop, lighting, floor — into the gap, via a self-hosted inpainting service. Looks the most realistic of the four, cached per photo after the first render. Use with the "allow" overflow policy.',
+    'AI will generate natural background to fill empty canvas regions. The original product image is never modified.',
 }
 
 export function BackgroundControls({
@@ -39,7 +41,7 @@ export function BackgroundControls({
           <option value="gradient">Gradient</option>
           <option value="blur_extend">Blurred extend</option>
           <option value="edge_extend">Edge extend</option>
-          <option value="ai_extend">AI Extend</option>
+          <option value="ai_extend">AI Extend (fills canvas with AI)</option>
         </Select>
       </Field>
 
@@ -120,7 +122,7 @@ export function BackgroundControls({
         </>
       )}
 
-      {background.mode === 'ai_extend' && <InpaintStatus />}
+      {background.mode === 'ai_extend' && <AiExtendStatus />}
 
       {background.mode === 'ai_extend' && (
         <Field

@@ -28,7 +28,7 @@
 
 import * as queue from './queue'
 import { handleVisionJob, handleRenderJob, handleBackgroundFillJob, BackgroundNotReadyError } from './worker'
-import { InpaintServiceError } from '@/services/inpaint-client'
+import { CloudinaryServiceError } from '@/services/cloudinary-service'
 import { closeDb } from '@/db/client'
 import { VisionUnavailableError } from '@/vision/types'
 import type { BackgroundFillJobPayload, JobKind, RenderJobPayload, VisionJobPayload } from '@/db/types'
@@ -146,12 +146,12 @@ async function runOne(kind: JobKind): Promise<boolean> {
         error: message,
         retrying: false,
       })
-    } else if (err instanceof InpaintServiceError && err.kind === 'busy') {
-      // The GPU is working on someone else's image. Nothing is wrong, so
-      // this must not consume an attempt — and critically must not queue
-      // behind the running generation, which is what turned a 73-second
-      // workload into an hours-long backlog. Step aside and come back.
-      queue.defer(job.id, queue.BACKGROUND_FILL_POLL_MS, message, { refundAttempt: true })
+    } else if (err instanceof CloudinaryServiceError && err.kind === 'rate_limited') {
+      // Cloudinary throttled us, which says nothing about this job — the
+      // work is still valid and will succeed shortly. Backing off without
+      // consuming an attempt keeps a burst from converting a temporary rate
+      // limit into permanently failed renders across a whole batch.
+      queue.defer(job.id, queue.BACKGROUND_FILL_POLL_MS * 4, message, { refundAttempt: true })
       post({
         type: 'job:failed',
         workerId: cfg.workerId,
@@ -161,15 +161,42 @@ async function runOne(kind: JobKind): Promise<boolean> {
         error: message,
         retrying: true,
       })
+    } else if (
+      err instanceof CloudinaryServiceError &&
+      (err.kind === 'auth' || err.kind === 'credits')
+    ) {
+      // Neither of these can be fixed by trying again — missing credentials
+      // or an exhausted generative-credit balance need a person. Retrying
+      // would burn every attempt on every image in the batch against the
+      // same wall and bury the real cause in identical failures, so park it
+      // the way a missing model does.
+      queue.park(job.id, message)
+      post({
+        type: 'job:failed',
+        workerId: cfg.workerId,
+        jobId: job.id,
+        kind: job.kind,
+        batchId: job.batchId,
+        error: message,
+        retrying: false,
+      })
     } else if (err instanceof BackgroundNotReadyError) {
       // Not a failure — this render is correctly declining to occupy a
       // worker slot doing nothing while a `background_fill` job (on its own,
-      // separate slots) finishes. Deferred rather than failed-and-retried:
-      // see `queue.defer` for why attempts are left untouched, and only give
-      // up for real once they run out anyway, same ceiling a genuine failure
-      // would hit.
-      if (job.attempts < job.maxAttempts) {
-        queue.defer(job.id, queue.BACKGROUND_FILL_POLL_MS, message)
+      // separate slots) finishes.
+      //
+      // Whether this costs an attempt depends on whether that dependency is
+      // actually alive. While it is, waiting is free: a bulk run's fill queue
+      // can be far deeper than any fixed patience budget, and charging a
+      // retry per check is what failed 469 healthy renders on a 554-photo
+      // catalogue while every fill was still succeeding. The dependency's own
+      // `maxAttempts` guarantees it resolves either way, so this cannot wait
+      // forever. If it is NOT alive, the attempt is charged as before, so a
+      // render that can never find its dependency still terminates.
+      if (err.dependencyActive || job.attempts < job.maxAttempts) {
+        queue.defer(job.id, queue.BACKGROUND_FILL_POLL_MS, message, {
+          refundAttempt: err.dependencyActive,
+        })
         post({
           type: 'job:failed',
           workerId: cfg.workerId,

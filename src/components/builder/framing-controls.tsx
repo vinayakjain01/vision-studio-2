@@ -41,7 +41,7 @@ import {
 } from '@/framing/types'
 import type { BackgroundMode, BackgroundSettings } from '@/templates/types'
 import { Badge, Button, Field, Select, Slider } from '@/components/ui/primitives'
-import { InpaintStatus } from './inpaint-status'
+import { AiExtendStatus } from './ai-extend-status'
 import { cn, humanize } from '@/lib/utils'
 
 /** Anchors offered in the pickers, grouped so the list is navigable. */
@@ -667,11 +667,11 @@ function AdvancedFraming({
                 <option value="gradient">Gradient</option>
                 <option value="blur_extend">Blurred extend</option>
                 <option value="edge_extend">Edge extend</option>
-                <option value="ai_extend">AI Extend — regenerate the real backdrop</option>
+                <option value="ai_extend">AI Extend (fills canvas with AI)</option>
               </Select>
             </Field>
 
-            {background.mode === 'ai_extend' && <InpaintStatus />}
+            {background.mode === 'ai_extend' && <AiExtendStatus />}
 
             <p className="text-[10px] leading-snug text-[var(--color-ink-subtle)]">
               Same setting as Background on the <strong>Canvas</strong> tab — colours, blur
@@ -756,7 +756,9 @@ const GAP_FILL_HINTS: Record<BackgroundMode, string> = {
   blur_extend: 'A blurred, zoomed copy of the photo fills the gap. Cheap and always available.',
   edge_extend: 'The photo’s own edge pixels stretch into the gap. Works on plain seamless backdrops.',
   ai_extend:
-    'The studio environment — backdrop, lighting, floor — is regenerated into the gap by the self-hosted inpaint service. The most realistic option, and the only one that needs a service running.',
+    // Matched to the sibling CatalogStudio project's own "Fit" control so the
+    // same concept reads identically across both tools.
+    'AI will generate natural background to fill empty canvas regions. The original product image is never modified.',
 }
 
 // ─── Sub-controls ────────────────────────────────────────────────────────────

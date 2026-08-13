@@ -37,18 +37,19 @@ import type { ShotType } from '@/vision/types'
  * yet" (see `BackgroundNotReadyError` in `src/jobs/worker.ts`), polled every
  * `queue.BACKGROUND_FILL_POLL_MS` — not a real failure — so this has to
  * outlast the SLOWEST plausible wait: one full `background_fill` job, timed
- * out at `INPAINT_TIMEOUT_MS`, plus however long it sits queued behind
- * whatever else is already using the inpaint worker slots. Doubling the
- * timeout covers that queueing delay without a separate estimate for it;
+ * out at `CLOUDINARY_TIMEOUT_MS`, plus however long it sits queued behind
+ * whatever else is already using the background-fill worker slots. Doubling
+ * the timeout covers that queueing delay without a separate estimate for it;
  * `config.jobs.maxAttempts` (a real failure's budget, typically 3) would
- * exhaust in under 15 seconds against a wait that can legitimately be
- * minutes in CPU test mode, which is why this is computed instead of reused.
+ * exhaust in under 15 seconds against a wait that is legitimately minutes
+ * when Cloudinary is rendering a fresh derivation, which is why this is
+ * computed instead of reused.
  */
 function renderMaxAttempts(templateId: string): number {
   const template = templates.get(templateId)
   if (template?.document.background.mode !== 'ai_extend') return config.jobs.maxAttempts
 
-  const worstCaseWaitMs = config.inpaint.requestTimeoutMs * 2
+  const worstCaseWaitMs = config.cloudinary.requestTimeoutMs * 2
   return Math.max(
     config.jobs.maxAttempts,
     Math.ceil(worstCaseWaitMs / queue.BACKGROUND_FILL_POLL_MS) + 5
@@ -480,7 +481,7 @@ export async function renderOnce(
   const deadline =
     Date.now() +
     (template?.document.background.mode === 'ai_extend'
-      ? config.inpaint.requestTimeoutMs * 2 + 60_000
+      ? config.cloudinary.requestTimeoutMs * 2 + 60_000
       : 120_000)
   for (;;) {
     const job = queue.get(jobId)
