@@ -87,7 +87,17 @@ export interface BackgroundSettings {
 }
 
 export const DEFAULT_BACKGROUND: BackgroundSettings = {
-  mode: 'solid',
+  /**
+   * `ai_extend` by default, paired with the `allow` overflow default in
+   * `src/framing/types.ts` — the two only make sense together.
+   *
+   * Worth knowing when changing this: unlike every other mode here, this one
+   * costs money. Each new (photo, framing, prompt) combination spends one
+   * Cloudinary generative credit; re-rendering the same combination is free
+   * because the result is cached as a derived asset. A template switched to
+   * `solid` (or any other mode) never calls out at all.
+   */
+  mode: 'ai_extend',
   color: '#ffffff',
   gradientFrom: '#f4f4f5',
   gradientTo: '#d4d4d8',

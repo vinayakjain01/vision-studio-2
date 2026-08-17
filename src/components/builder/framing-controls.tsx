@@ -159,6 +159,8 @@ function SimpleFraming({
   activeStrategyId,
   activeFraming,
   verticalRange,
+  background,
+  onBackgroundChange,
 }: FramingControlsProps) {
   /**
    * Simple mode edits the rule that is framing the photo CURRENTLY ON SCREEN,
@@ -309,6 +311,28 @@ function SimpleFraming({
         />
       </div>
 
+      {/* Promoted out of Advanced: which photos a template touches, and what
+          fills the canvas around them, are the two decisions someone setting
+          a template up has to make first — not fine-tuning. */}
+      <div className="space-y-3 border-t border-[var(--color-border)] pt-4">
+        <ShotTypePicker
+          value={primary.shotTypes}
+          onChange={shotTypes => updatePrimary({ shotTypes })}
+          hint={
+            isBackupRule
+              ? `Applies to the "${primary.label}" rule, the one framing this photo. Leave empty to allow any shot type.`
+              : 'Leave empty to allow any. Set this to keep a full-body frame off garment-only shots.'
+          }
+        />
+
+        <GapFillControls
+          spec={spec}
+          onChange={onChange}
+          background={background}
+          onBackgroundChange={onBackgroundChange}
+        />
+      </div>
+
       <ConstraintNotes framing={activeFraming} />
 
       {fallbackCount > 0 && (
@@ -321,6 +345,118 @@ function SimpleFraming({
         </p>
       )}
     </div>
+  )
+}
+
+/**
+ * Which shot types a rule applies to.
+ *
+ * Shared between Simple and Advanced deliberately. It is the control that
+ * decides whether a template touches a photo at all — "this look-book frame is
+ * for full-body shots, leave the garment-only crops alone" — which makes it a
+ * first question for anyone setting a template up, not a fine-tuning detail.
+ * Advanced shows one per rule; Simple shows the one for the rule currently
+ * framing the preview.
+ */
+function ShotTypePicker({
+  value,
+  onChange,
+  hint,
+}: {
+  value: ShotType[]
+  onChange: (next: ShotType[]) => void
+  hint: string
+}) {
+  return (
+    <Field label="Only for shot types" hint={hint}>
+      <div className="flex flex-wrap gap-1">
+        {SHOT_TYPES.map(type => {
+          const on = value.includes(type)
+          return (
+            <button
+              key={type}
+              onClick={() => onChange(on ? value.filter(t => t !== type) : [...value, type])}
+              className={cn(
+                'rounded border px-1.5 py-0.5 text-[10px] transition-colors',
+                on
+                  ? 'border-[var(--color-accent)] bg-[color-mix(in_oklch,var(--color-accent)_18%,transparent)] text-[var(--color-accent)]'
+                  : 'border-[var(--color-border)] text-[var(--color-ink-subtle)] hover:text-[var(--color-ink-muted)]'
+              )}
+            >
+              {humanize(type)}
+            </button>
+          )
+        })}
+      </div>
+    </Field>
+  )
+}
+
+/**
+ * What happens to the canvas the photo does not cover, and what fills it.
+ *
+ * Two settings that are meaningless apart: choosing to allow a gap raises the
+ * question of what goes in it, and the answer used to live on a different tab
+ * entirely. Kept together and shown in both modes for that reason.
+ */
+function GapFillControls({
+  spec,
+  onChange,
+  background,
+  onBackgroundChange,
+}: {
+  spec: FramingSpec
+  onChange: (spec: FramingSpec) => void
+  background?: BackgroundSettings
+  onBackgroundChange?: (background: BackgroundSettings) => void
+}) {
+  return (
+    <>
+      <Field
+        label="When the crop falls outside the photo"
+        hint={OVERFLOW_HINTS[spec.constraints.overflow]}
+      >
+        <Select
+          value={spec.constraints.overflow}
+          onChange={event =>
+            onChange({
+              ...spec,
+              constraints: { ...spec.constraints, overflow: event.target.value as OverflowPolicy },
+            })
+          }
+        >
+          <option value="allow">Allow it (background fills the gap)</option>
+          <option value="shrink">Zoom out until it fits (keeps the landmark on target)</option>
+          <option value="clamp">Slide it back inside (keeps scale)</option>
+        </Select>
+      </Field>
+
+      {spec.constraints.overflow === 'allow' && background && onBackgroundChange && (
+        <div className="space-y-2 rounded-md border border-[var(--color-border-strong)] bg-[var(--color-surface-raised)] p-2.5">
+          <Field label="…and what fills it" hint={GAP_FILL_HINTS[background.mode]}>
+            <Select
+              value={background.mode}
+              onChange={e =>
+                onBackgroundChange({ ...background, mode: e.target.value as BackgroundMode })
+              }
+            >
+              <option value="ai_extend">AI Extend (fills canvas with AI)</option>
+              <option value="solid">Solid colour — leaves flat empty space</option>
+              <option value="gradient">Gradient</option>
+              <option value="blur_extend">Blurred extend</option>
+              <option value="edge_extend">Edge extend</option>
+            </Select>
+          </Field>
+
+          {background.mode === 'ai_extend' && <AiExtendStatus />}
+
+          <p className="text-[10px] leading-snug text-[var(--color-ink-subtle)]">
+            Same setting as Background on the <strong>Canvas</strong> tab — colours, blur amount
+            and the AI Extend backdrop prompt live there.
+          </p>
+        </div>
+      )}
+    </>
   )
 }
 
@@ -562,36 +698,11 @@ function AdvancedFraming({
                   <HorizontalControl strategy={strategy} index={index} update={updateStrategy} />
 
                   <div className="space-y-2 border-t border-[var(--color-border)] pt-3">
-                    <Field
-                      label="Only for shot types"
+                    <ShotTypePicker
+                      value={strategy.shotTypes}
+                      onChange={shotTypes => updateStrategy(index, { shotTypes })}
                       hint="Leave empty to allow any. Useful when a rule only makes sense for full-body shots."
-                    >
-                      <div className="flex flex-wrap gap-1">
-                        {SHOT_TYPES.map(type => {
-                          const on = strategy.shotTypes.includes(type)
-                          return (
-                            <button
-                              key={type}
-                              onClick={() =>
-                                updateStrategy(index, {
-                                  shotTypes: on
-                                    ? strategy.shotTypes.filter(t => t !== type)
-                                    : [...strategy.shotTypes, type],
-                                })
-                              }
-                              className={cn(
-                                'rounded border px-1.5 py-0.5 text-[10px] transition-colors',
-                                on
-                                  ? 'border-[var(--color-accent)] bg-[color-mix(in_oklch,var(--color-accent)_18%,transparent)] text-[var(--color-accent)]'
-                                  : 'border-[var(--color-border)] text-[var(--color-ink-subtle)] hover:text-[var(--color-ink-muted)]'
-                              )}
-                            >
-                              {humanize(type)}
-                            </button>
-                          )
-                        })}
-                      </div>
-                    </Field>
+                    />
 
                     <Slider
                       label="Minimum landmark confidence"
@@ -626,59 +737,12 @@ function AdvancedFraming({
           hint="Never draw source pixels larger than this. Guards against soft output on low-resolution files."
         />
 
-        <Field
-          label="When the crop falls outside the photo"
-          hint={OVERFLOW_HINTS[spec.constraints.overflow]}
-        >
-          <Select
-            value={spec.constraints.overflow}
-            onChange={event =>
-              update({
-                constraints: {
-                  ...spec.constraints,
-                  overflow: event.target.value as OverflowPolicy,
-                },
-              })
-            }
-          >
-            <option value="clamp">Slide it back inside (keeps scale)</option>
-            <option value="shrink">Zoom out until it fits (keeps the landmark on target)</option>
-            <option value="allow">Allow it (background fills the gap)</option>
-          </Select>
-        </Field>
-
-        {/* "Background fills the gap" — but WHICH background? That setting
-            lives on the Canvas tab, which is not where anyone is looking when
-            they pick this option and then see white space in the preview.
-            Mirrored here, at the moment the question arises. */}
-        {spec.constraints.overflow === 'allow' && background && onBackgroundChange && (
-          <div className="space-y-2 rounded-md border border-[var(--color-border-strong)] bg-[var(--color-surface-raised)] p-2.5">
-            <Field
-              label="…and what fills it"
-              hint={GAP_FILL_HINTS[background.mode]}
-            >
-              <Select
-                value={background.mode}
-                onChange={e =>
-                  onBackgroundChange({ ...background, mode: e.target.value as BackgroundMode })
-                }
-              >
-                <option value="solid">Solid colour — leaves flat empty space</option>
-                <option value="gradient">Gradient</option>
-                <option value="blur_extend">Blurred extend</option>
-                <option value="edge_extend">Edge extend</option>
-                <option value="ai_extend">AI Extend (fills canvas with AI)</option>
-              </Select>
-            </Field>
-
-            {background.mode === 'ai_extend' && <AiExtendStatus />}
-
-            <p className="text-[10px] leading-snug text-[var(--color-ink-subtle)]">
-              Same setting as Background on the <strong>Canvas</strong> tab — colours, blur
-              amount and the AI Extend backdrop prompt live there.
-            </p>
-          </div>
-        )}
+        <GapFillControls
+          spec={spec}
+          onChange={onChange}
+          background={background}
+          onBackgroundChange={onBackgroundChange}
+        />
 
         <Field
           label="Always keep in frame"

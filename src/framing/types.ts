@@ -106,14 +106,24 @@ export interface FramingConstraints {
 export const DEFAULT_CONSTRAINTS: FramingConstraints = {
   maxUpscale: 1.5,
   minUpscale: 0.05,
-  // Zoom out until the whole crop fits inside the source, rather than sliding
-  // it and letting the shortfall show as background fill. A crop bigger than
-  // the source is the common case for an off-type photo run through a
-  // strict template (e.g. a torso crop through a full-body spec, where the
-  // requested head-to-feet span already covers ~100% of the frame) — `clamp`
-  // would letterbox it with visible margins; `shrink` produces a photo that
-  // fills the canvas at the cost of the subject appearing smaller than asked.
-  overflow: 'shrink',
+  /**
+   * Keep the requested framing and let the background fill whatever the photo
+   * does not cover.
+   *
+   * This was `shrink` while the only things available to fill that gap were a
+   * flat colour, a blurred copy or a stretched edge — all of which look worse
+   * than simply zooming out until the photo covers the canvas, so zooming out
+   * was the right default. With `ai_extend` now the default background (see
+   * DEFAULT_BACKGROUND) the trade reverses: the gap gets a real continuation
+   * of the studio, so honouring the template's actual framing costs nothing
+   * and every photo comes out at the size the template asked for instead of
+   * whatever each source photo's own proportions allowed.
+   *
+   * The pairing matters — `allow` with a plain background is the one
+   * combination that produces visible empty space, which is why the two
+   * defaults changed together.
+   */
+  overflow: 'allow',
   keepInside: [],
   keepInsidePaddingPct: 0,
 }
@@ -397,6 +407,11 @@ export const FRAMING_PRESETS: Record<string, { name: string; description: string
       constraints: {
         ...DEFAULT_CONSTRAINTS,
         maxUpscale: 1.2,
+        // Deliberately NOT the `allow` default. A flat lay is a product on a
+        // sweep with even margins around it — the whole look is the margin,
+        // so zooming out until the piece fits is the intent rather than a
+        // compromise, and there is no studio environment to continue. Kept
+        // explicit so it reads as a choice, not a leftover.
         overflow: 'shrink',
         keepInside: [],
         keepInsidePaddingPct: 0,
