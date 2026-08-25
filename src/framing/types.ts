@@ -148,6 +148,21 @@ export interface FramingStrategy {
   vertical: VerticalPlacement | null
   horizontal: HorizontalPlacement | null
   scale: ScaleStrategy
+  /**
+   * What to do when THIS rule's crop falls outside the photo, overriding the
+   * template-wide `constraints.overflow`. Undefined or null means "use the
+   * template default", which is what every rule did before this existed.
+   *
+   * Per-rule because the right answer genuinely differs by rule, and a single
+   * template-wide setting forces one compromise across a chain built to treat
+   * photos differently. A full-body rule wants `allow`: the crop is
+   * deliberately wider than the photo and the generated backdrop is the point.
+   * The anchor-free "fit subject" fallback usually wants `shrink`: it catches
+   * portraits and product-only crops where there is no reliable subject
+   * geometry, and inventing a large surround around an already-tight photo is
+   * both expensive and the most likely place for a generation to look wrong.
+   */
+  overflow?: OverflowPolicy | null
 }
 
 export interface FramingSpec {

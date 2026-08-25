@@ -42,9 +42,11 @@ import {
   type ConstraintViolation,
   type CropBox,
   type FramingResult,
+  type FramingConstraints,
   type FramingSpec,
   type FramingStrategy,
   type FramingSubject,
+  type OverflowPolicy,
   type ScaleStrategy,
 } from './types'
 import type { Size } from '@/vision/types'
@@ -70,6 +72,11 @@ export function solveFraming(
       message: `Primary framing was not applicable to this image; used "${strategy.label}" instead.`,
     })
   }
+
+  // The rule that actually won gets to decide how its own overflow is
+  // handled, falling back to the template-wide setting when it expresses no
+  // opinion. Resolved once, here, so every consumer below agrees.
+  const overflowPolicy = effectiveOverflow(strategy, constraints)
 
   // ── 1. Crop height from the scale strategy ───────────────────────────────
   let cropHeight = resolveCropHeight(subject, strategy.scale, canvas, violations)
@@ -123,7 +130,7 @@ export function solveFraming(
     { x: cropX, y: cropY, width: cropWidth, height: cropHeight },
     subject.image,
     canvas,
-    constraints.overflow,
+    overflowPolicy,
     violations,
     // `shrink` changes the crop size, which invalidates the position derived in
     // step 3 (cy depends on cropHeight). Hand the policy a way to re-derive
@@ -149,6 +156,21 @@ export function solveFraming(
     overflow: bounded.overflow,
     canvas,
   }
+}
+
+/**
+ * The overflow policy actually in force for one rule: its own, or the
+ * template's when it does not override.
+ *
+ * Exported because the builder needs to show the same answer the solver will
+ * use, and a second copy of this two-line rule in the UI is exactly how a
+ * preview starts disagreeing with the render.
+ */
+export function effectiveOverflow(
+  strategy: Pick<FramingStrategy, 'overflow'>,
+  constraints: Pick<FramingConstraints, 'overflow'>
+): OverflowPolicy {
+  return strategy.overflow ?? constraints.overflow
 }
 
 // ─── Strategy selection ──────────────────────────────────────────────────────
@@ -663,11 +685,16 @@ export function achievableVerticalRange(
   canvas: Size
 ): { minPct: number; maxPct: number } | null {
   const constraints = { ...DEFAULT_CONSTRAINTS, ...spec.constraints }
-  if (constraints.overflow !== 'clamp') return null
 
   const violations: ConstraintViolation[] = []
   const { strategy } = selectStrategy(subject, spec, violations)
   if (!strategy.vertical) return null
+
+  // Asked of the rule that will actually frame this photo, not the template:
+  // the slider's usable band is a property of the policy in force here, and
+  // reading the template-wide value would mark the band wrong on any photo
+  // whose rule overrides it.
+  if (effectiveOverflow(strategy, constraints) !== 'clamp') return null
 
   const anchor = subject.anchors[strategy.vertical.anchor]
   if (!anchor) return null

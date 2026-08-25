@@ -41,6 +41,7 @@ import {
 } from '@/framing/types'
 import type { BackgroundMode, BackgroundSettings } from '@/templates/types'
 import { Badge, Button, Field, Select, Slider } from '@/components/ui/primitives'
+import { effectiveOverflow } from '@/framing/solver'
 import { AiExtendStatus } from './ai-extend-status'
 import { cn, humanize } from '@/lib/utils'
 
@@ -325,11 +326,17 @@ function SimpleFraming({
           }
         />
 
+        {/* Scoped to the rule framing the photo on screen, matching every
+            other control in Simple mode: change it while looking at a
+            full-body shot and you have changed the full-body rule, not the
+            template. */}
         <GapFillControls
           spec={spec}
           onChange={onChange}
           background={background}
           onBackgroundChange={onBackgroundChange}
+          rule={primary}
+          onRuleChange={updatePrimary}
         />
       </div>
 
@@ -404,34 +411,63 @@ function GapFillControls({
   onChange,
   background,
   onBackgroundChange,
+  /**
+   * When given, the selector edits THIS rule's own policy rather than the
+   * template-wide default, and offers an extra option to defer to that
+   * default. Simple mode passes the rule framing the previewed photo;
+   * Advanced passes each rule in the chain; the Constraints section passes
+   * nothing and so edits the template default.
+   */
+  rule,
+  onRuleChange,
 }: {
   spec: FramingSpec
   onChange: (spec: FramingSpec) => void
   background?: BackgroundSettings
   onBackgroundChange?: (background: BackgroundSettings) => void
+  rule?: FramingStrategy
+  onRuleChange?: (patch: Partial<FramingStrategy>) => void
 }) {
+  const perRule = !!rule && !!onRuleChange
+  // What the solver will actually apply — the same one-line rule it uses, so
+  // the panel below can never claim a different policy than the render.
+  const active = perRule ? effectiveOverflow(rule!, spec.constraints) : spec.constraints.overflow
+  const selectValue = perRule ? rule!.overflow ?? '' : spec.constraints.overflow
+
   return (
     <>
       <Field
         label="When the crop falls outside the photo"
-        hint={OVERFLOW_HINTS[spec.constraints.overflow]}
+        hint={
+          perRule && !rule!.overflow
+            ? `Following the template default (${OVERFLOW_LABELS[active].toLowerCase()}). Choose one here to set it for the "${rule!.label}" rule only.`
+            : OVERFLOW_HINTS[active]
+        }
       >
         <Select
-          value={spec.constraints.overflow}
-          onChange={event =>
-            onChange({
-              ...spec,
-              constraints: { ...spec.constraints, overflow: event.target.value as OverflowPolicy },
-            })
-          }
+          value={selectValue}
+          onChange={event => {
+            const value = event.target.value
+            if (perRule) {
+              onRuleChange!({ overflow: value === '' ? null : (value as OverflowPolicy) })
+            } else {
+              onChange({
+                ...spec,
+                constraints: { ...spec.constraints, overflow: value as OverflowPolicy },
+              })
+            }
+          }}
         >
+          {perRule && (
+            <option value="">Use template default — {OVERFLOW_LABELS[spec.constraints.overflow]}</option>
+          )}
           <option value="allow">Allow it (background fills the gap)</option>
           <option value="shrink">Zoom out until it fits (keeps the landmark on target)</option>
           <option value="clamp">Slide it back inside (keeps scale)</option>
         </Select>
       </Field>
 
-      {spec.constraints.overflow === 'allow' && background && onBackgroundChange && (
+      {active === 'allow' && background && onBackgroundChange && (
         <div className="space-y-2 rounded-md border border-[var(--color-border-strong)] bg-[var(--color-surface-raised)] p-2.5">
           <Field label="…and what fills it" hint={GAP_FILL_HINTS[background.mode]}>
             <Select
@@ -704,6 +740,18 @@ function AdvancedFraming({
                       hint="Leave empty to allow any. Useful when a rule only makes sense for full-body shots."
                     />
 
+                    {/* Per-rule, so a full-body rule can allow a generated
+                        surround while the anchor-free fallback zooms out
+                        instead. Unset means the template default below. */}
+                    <GapFillControls
+                      spec={spec}
+                      onChange={onChange}
+                      background={background}
+                      onBackgroundChange={onBackgroundChange}
+                      rule={strategy}
+                      onRuleChange={patch => updateStrategy(index, patch)}
+                    />
+
                     <Slider
                       label="Minimum landmark confidence"
                       value={strategy.minConfidence}
@@ -737,6 +785,11 @@ function AdvancedFraming({
           hint="Never draw source pixels larger than this. Guards against soft output on low-resolution files."
         />
 
+        {/* The template-wide fallback. Any rule that sets its own policy
+            (in its panel above) overrides this for the photos it frames. */}
+        <p className="text-[10px] leading-snug text-[var(--color-ink-subtle)]">
+          Applies to rules that have not set their own overflow policy.
+        </p>
         <GapFillControls
           spec={spec}
           onChange={onChange}
@@ -814,6 +867,13 @@ const OVERFLOW_HINTS: Record<OverflowPolicy, string> = {
  * space it creates — "solid" being a real, legitimate answer is worth saying
  * plainly rather than implying every template ought to fill it.
  */
+/** Short names, for referring to a policy inside a sentence. */
+const OVERFLOW_LABELS: Record<OverflowPolicy, string> = {
+  allow: 'Allow it',
+  shrink: 'Zoom out until it fits',
+  clamp: 'Slide it back inside',
+}
+
 const GAP_FILL_HINTS: Record<BackgroundMode, string> = {
   solid: 'The gap stays a flat colour. Correct for catalogues that want clean empty margins.',
   gradient: 'The gap becomes part of a two-stop gradient across the whole canvas.',

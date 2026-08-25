@@ -16,13 +16,14 @@ import {
   hasOverflow,
   aiExtendCacheKind,
 } from '@/render/compositor'
-import { generativeFill } from '@/services/cloudinary-service'
+import { generativeFill, looksLikeCompleteJpeg } from '@/services/cloudinary-service'
 import { creatives, images, products, templates, visionAnalyses } from '@/db/repositories'
 import {
   readMedia,
   writeFileAtomic,
   creativeKey,
   derivedKey,
+  deleteMedia,
   mediaExists,
   putDerived,
 } from '@/storage/media-store'
@@ -172,8 +173,20 @@ export async function handleRenderJob(
       const kind = aiExtendCacheKind(overflow, template.document.background.backdropPrompt)
       const key = derivedKey(sourceHash, kind, 'jpg')
 
-      if (await mediaExists('derived', key)) {
-        precomputedBackground = await readMedia('derived', key)
+      const cached = (await mediaExists('derived', key)) ? await readMedia('derived', key) : null
+
+      if (cached && !looksLikeCompleteJpeg(cached)) {
+        // A truncated cached background decodes into a flat block rather than
+        // throwing, so it would be composited and shipped with the job
+        // reporting success. Discard it and let the fill run again — cheaper
+        // than the alternative, which is a permanently wrong creative under a
+        // cache key nothing will ever recompute.
+        console.warn(`[render] discarding truncated cached background ${key}; regenerating`)
+        await deleteMedia('derived', key).catch(() => {})
+      }
+
+      if (cached && looksLikeCompleteJpeg(cached)) {
+        precomputedBackground = cached
       } else {
         // Ask what actually happened to the fill this render needs, rather
         // than inferring it from elapsed time. Three genuinely different

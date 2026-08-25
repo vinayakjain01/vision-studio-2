@@ -272,7 +272,69 @@ export async function generativeFill(
   }
 
   const bytes = Buffer.from(await response.arrayBuffer())
+  await assertUsableImage(bytes, response, canvasW, canvasH)
   return { bytes, width: canvasW, height: canvasH }
+}
+
+/**
+ * Refuse to return a background that is not a complete, correctly-sized image.
+ *
+ * Everything downstream trusts these bytes: they are cached as a derived
+ * asset, composited, and shipped as the finished creative, and the render job
+ * that uses them reports success. So an image that is merely *decodable* is
+ * not good enough — a truncated JPEG decodes perfectly happily, filling
+ * whatever never arrived with a flat grey or black block and a hard
+ * horizontal edge, which is indistinguishable from a bad generation to
+ * everything downstream and gets cached permanently under a key that will
+ * never be recomputed.
+ *
+ * The checks are all STRUCTURAL — byte counts, markers, dimensions — chosen
+ * because they cannot produce a false rejection. A content-based check
+ * ("reject if the fill came back too dark") is deliberately NOT here: this
+ * catalogue's own backdrop is a painted mural whose lower bands measure
+ * luminance 11/255 at a standard deviation of 1.2, i.e. genuinely near-black
+ * and genuinely almost flat. Any threshold strict enough to catch a failure
+ * block would throw away correct output on those photos.
+ */
+async function assertUsableImage(
+  bytes: Buffer,
+  response: Response,
+  expectedWidth: number,
+  expectedHeight: number
+): Promise<void> {
+  const fail = (why: string) =>
+    new CloudinaryServiceError(`Cloudinary returned an unusable image — ${why}`, 'rejected')
+
+  if (bytes.length === 0) throw fail('the response body was empty')
+
+  // A short read is the single most likely way to get a flat block: the
+  // connection drops mid-download and the partial file still decodes.
+  const declared = Number(response.headers.get('content-length') ?? '')
+  if (Number.isFinite(declared) && declared > 0 && bytes.length !== declared) {
+    throw fail(`a truncated download (${bytes.length} of ${declared} bytes)`)
+  }
+
+  // JPEG start- and end-of-image markers. The EOI is what a truncated
+  // transfer loses, and checking it costs two byte comparisons.
+  const hasSoi = bytes[0] === 0xff && bytes[1] === 0xd8
+  const hasEoi = bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9
+  if (!hasSoi) throw fail('a response that is not a JPEG at all')
+  if (!hasEoi) throw fail('an incomplete JPEG (no end-of-image marker)')
+
+  let meta: { width?: number; height?: number }
+  try {
+    meta = await sharp(bytes).metadata()
+  } catch (err) {
+    throw fail(`an undecodable image (${(err as Error).message})`)
+  }
+
+  // Cloudinary serves a small placeholder on some transformation errors even
+  // with a 200, and a wrong size would silently letterbox or stretch.
+  if (meta.width !== expectedWidth || meta.height !== expectedHeight) {
+    throw fail(
+      `${meta.width}x${meta.height} when ${expectedWidth}x${expectedHeight} was requested`
+    )
+  }
 }
 
 function classifyHttp(status: number, detail: string): CloudinaryServiceError {
@@ -310,4 +372,23 @@ function classify(err: unknown, phase: string): CloudinaryServiceError {
 /** Whether credentials are present — used by the builder to warn up front. */
 export function isConfigured(): boolean {
   return config.cloudinary.enabled
+}
+
+/**
+ * Cheap integrity check for a background read back OUT of the derived cache.
+ *
+ * `generativeFill` validates before writing, but entries cached before that
+ * existed — or truncated by a disk-full or an interrupted write — are still
+ * on disk, and a truncated JPEG decodes into a flat block rather than an
+ * error. Checking on read lets a bad entry be discarded and regenerated
+ * instead of being composited into a finished creative forever.
+ */
+export function looksLikeCompleteJpeg(bytes: Buffer): boolean {
+  return (
+    bytes.length > 4 &&
+    bytes[0] === 0xff &&
+    bytes[1] === 0xd8 &&
+    bytes[bytes.length - 2] === 0xff &&
+    bytes[bytes.length - 1] === 0xd9
+  )
 }
