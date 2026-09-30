@@ -175,17 +175,32 @@ export function ImportClient({ recentImports }: { recentImports: ImportRecord[] 
           const batch = batches[index]
           const batchBytes = batch.reduce((sum, item) => sum + item.file.size, 0)
 
-          const form = new FormData()
-          for (const item of batch) {
-            form.append('files', item.file, item.file.name)
-            form.append('paths', item.relativePath)
-          }
+          // A stalled connection or a dropped batch is usually transient —
+          // retried a couple of times before it counts against the import,
+          // rather than failing files a moment's network hiccup would have
+          // let through on the next attempt.
+          let response: { ok: boolean; body: any } = { ok: false, body: null }
+          for (let attempt = 1; attempt <= MAX_BATCH_ATTEMPTS; attempt++) {
+            const form = new FormData()
+            for (const item of batch) {
+              form.append('files', item.file, item.file.name)
+              form.append('paths', item.relativePath)
+            }
 
-          const response = await uploadForm(`/api/imports/${created.id}/files`, form, loaded => {
-            inFlight.set(index, Math.min(loaded, batchBytes))
-            report()
-          })
-          inFlight.delete(index)
+            response = await uploadForm(`/api/imports/${created.id}/files`, form, loaded => {
+              inFlight.set(index, Math.min(loaded, batchBytes))
+              report()
+            })
+            inFlight.delete(index)
+
+            if (response.ok) break
+            if (attempt < MAX_BATCH_ATTEMPTS) {
+              toast.error(
+                `${response.body?.error ?? 'A batch failed to upload'} — retrying ` +
+                  `(${attempt}/${MAX_BATCH_ATTEMPTS - 1})`
+              )
+            }
+          }
 
           if (!response.ok) {
             // One rejected batch must not abandon the rest of the import — the
@@ -531,9 +546,27 @@ const UPLOAD_BATCH_BYTES = 16 * 1024 * 1024
 const UPLOAD_CONCURRENCY = 2
 
 /**
+ * How long one batch is allowed to sit with no progress before it's treated
+ * as dead. Comfortably under the reverse proxy's own timeout (600s in this
+ * app's nginx config) so a stalled connection surfaces here first, as a
+ * retryable failure, rather than the tab hanging until the proxy eventually
+ * gives up on its own.
+ */
+const UPLOAD_TIMEOUT_MS = 3 * 60 * 1000
+
+/** Attempts per batch before it's counted as failed. */
+const MAX_BATCH_ATTEMPTS = 3
+
+/**
  * POST a form with upload progress. `fetch` cannot report how much of a request
  * body has been sent, which is why the bar sat at 0 until an entire batch had
  * been uploaded AND ingested; XHR's `upload.onprogress` can.
+ *
+ * `xhr.timeout` has to be set explicitly — `ontimeout` never fires without it,
+ * since the property defaults to 0 ("never time out"). A batch that stalls
+ * (a dropped connection mid-upload, a flaky link) would otherwise sit forever
+ * with no error, no retry and no visible progress, indistinguishable from the
+ * import having quietly finished.
  */
 function uploadForm(
   url: string,
@@ -544,6 +577,7 @@ function uploadForm(
     const xhr = new XMLHttpRequest()
     xhr.open('POST', url)
     xhr.responseType = 'json'
+    xhr.timeout = UPLOAD_TIMEOUT_MS
     xhr.upload.onprogress = event => onProgress(event.loaded)
     xhr.onload = () =>
       resolve({ ok: xhr.status >= 200 && xhr.status < 300, body: xhr.response })
