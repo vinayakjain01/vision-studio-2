@@ -29,6 +29,7 @@
  * Server-only.
  */
 
+import os from 'os'
 import path from 'path'
 import type { ChildProcess } from 'child_process'
 import { config } from '@/config'
@@ -192,6 +193,20 @@ class WorkerPool {
         },
       }
     )
+
+    // Below-normal priority. Workers are CPU-bound for their whole life; at equal
+    // priority they compete with this web process for the same cores, and an
+    // import's upload requests (and the UI polling them) queue behind analysis —
+    // the progress bar stalls while the machine is busy doing the very work the
+    // upload is feeding. Workers lose nothing: on an otherwise idle CPU they
+    // still get all of it, and only yield when the web process needs a slice.
+    if (child.pid) {
+      try {
+        os.setPriority(child.pid, os.constants.priority.PRIORITY_BELOW_NORMAL)
+      } catch {
+        // Not permitted on this host; run at normal priority.
+      }
+    }
 
     const handle: WorkerHandle = { id, kinds, child, state: 'starting', restarts }
 

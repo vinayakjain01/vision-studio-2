@@ -27,7 +27,6 @@ import { toast } from 'sonner'
 import { AlertTriangle, CheckCircle2, FolderUp, Loader2, RefreshCw, X } from 'lucide-react'
 import {
   ACCEPT_ATTRIBUTE,
-  MAX_REQUEST_BYTES,
   classifyFile,
   groupIntoProducts,
   normalizePath,
@@ -153,37 +152,59 @@ export function ImportClient({ recentImports }: { recentImports: ImportRecord[] 
       let duplicates = 0
       let failed = 0
       let done = 0
-      let bytesSent = 0
+      let bytesDone = 0
+      // Bytes on the wire for batches still in flight, keyed by batch index.
+      const inFlight = new Map<number, number>()
 
-      for (const batch of batchBySize(scan.accepted, MAX_REQUEST_BYTES)) {
-        const form = new FormData()
-        for (const item of batch) {
-          form.append('files', item.file, item.file.name)
-          form.append('paths', item.relativePath)
-        }
-
-        const response = await fetch(`/api/imports/${created.id}/files`, {
-          method: 'POST',
-          body: form,
-        })
-
-        if (!response.ok) {
-          // One rejected batch must not abandon the rest of the import — the
-          // remaining files are independent.
-          failed += batch.length
-          const body = await response.json().catch(() => null)
-          toast.error(body?.error ?? `A batch of ${batch.length} files failed to upload`)
-        } else {
-          const body = await response.json()
-          imported += body.summary.imported
-          duplicates += body.summary.duplicates
-          failed += body.summary.failed
-        }
-
-        done += batch.length
-        bytesSent += batch.reduce((sum, item) => sum + item.file.size, 0)
-        setProgress({ done, total: scan.accepted.length, bytes: bytesSent })
+      const report = () => {
+        let live = 0
+        for (const loaded of inFlight.values()) live += loaded
+        setProgress({ done, total: scan.accepted.length, bytes: bytesDone + live })
       }
+
+      const batches = [...batchBySize(scan.accepted, UPLOAD_BATCH_BYTES)]
+      let next = 0
+
+      // A small pool of uploads rather than one at a time. The server ingests a
+      // batch (hash, decode headers, write to disk) after receiving it, and a
+      // strictly sequential client leaves the connection idle for that whole
+      // time. Two in flight keep the link busy while the previous batch lands.
+      const uploadWorker = async () => {
+        while (next < batches.length) {
+          const index = next++
+          const batch = batches[index]
+          const batchBytes = batch.reduce((sum, item) => sum + item.file.size, 0)
+
+          const form = new FormData()
+          for (const item of batch) {
+            form.append('files', item.file, item.file.name)
+            form.append('paths', item.relativePath)
+          }
+
+          const response = await uploadForm(`/api/imports/${created.id}/files`, form, loaded => {
+            inFlight.set(index, Math.min(loaded, batchBytes))
+            report()
+          })
+          inFlight.delete(index)
+
+          if (!response.ok) {
+            // One rejected batch must not abandon the rest of the import — the
+            // remaining files are independent.
+            failed += batch.length
+            toast.error(response.body?.error ?? `A batch of ${batch.length} files failed to upload`)
+          } else {
+            imported += response.body.summary.imported
+            duplicates += response.body.summary.duplicates
+            failed += response.body.summary.failed
+          }
+
+          done += batch.length
+          bytesDone += batchBytes
+          report()
+        }
+      }
+
+      await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, batches.length) }, uploadWorker))
 
       await patchJson(`/api/imports/${created.id}`, { action: 'finalize' })
 
@@ -279,9 +300,10 @@ export function ImportClient({ recentImports }: { recentImports: ImportRecord[] 
           <div className="space-y-4 px-4 py-4">
             {uploading && (
               <div className="space-y-1.5">
-                <Progress value={progress.total > 0 ? progress.done / progress.total : 0} />
+                <Progress value={scan.totalBytes > 0 ? progress.bytes / scan.totalBytes : 0} />
                 <p className="numeric text-[11px] text-[var(--color-ink-subtle)]">
-                  {progress.done} / {progress.total} files · {formatBytes(progress.bytes)} sent
+                  {progress.done} / {progress.total} files stored · {formatBytes(progress.bytes)} of{' '}
+                  {formatBytes(scan.totalBytes)} sent
                 </p>
               </div>
             )}
@@ -498,6 +520,37 @@ function ImportRow({ record, onDeleted }: { record: ImportRecord; onDeleted: () 
       </div>
     </li>
   )
+}
+
+/**
+ * Bytes per upload request. Well under the server's `MAX_REQUEST_BYTES`: a
+ * smaller batch reaches "stored" sooner, so the file counter moves steadily and
+ * a failed request costs a few files rather than dozens.
+ */
+const UPLOAD_BATCH_BYTES = 16 * 1024 * 1024
+const UPLOAD_CONCURRENCY = 2
+
+/**
+ * POST a form with upload progress. `fetch` cannot report how much of a request
+ * body has been sent, which is why the bar sat at 0 until an entire batch had
+ * been uploaded AND ingested; XHR's `upload.onprogress` can.
+ */
+function uploadForm(
+  url: string,
+  form: FormData,
+  onProgress: (loadedBytes: number) => void
+): Promise<{ ok: boolean; body: any }> {
+  return new Promise(resolve => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', url)
+    xhr.responseType = 'json'
+    xhr.upload.onprogress = event => onProgress(event.loaded)
+    xhr.onload = () =>
+      resolve({ ok: xhr.status >= 200 && xhr.status < 300, body: xhr.response })
+    xhr.onerror = () => resolve({ ok: false, body: { error: 'Network error during upload' } })
+    xhr.ontimeout = () => resolve({ ok: false, body: { error: 'Upload timed out' } })
+    xhr.send(form)
+  })
 }
 
 /**

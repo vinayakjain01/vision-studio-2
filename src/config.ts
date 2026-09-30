@@ -19,6 +19,7 @@
  * `process.env` values that are not `NEXT_PUBLIC_`-prefixed.
  */
 
+import os from 'os'
 import path from 'path'
 
 function int(value: string | undefined, fallback: number): number {
@@ -68,7 +69,31 @@ const modelDir = resolveFromRoot(process.env.VISION_STUDIO_MODEL_DIR || './model
  * room, rather than the app guessing that every machine does.
  */
 function defaultConcurrency(): { vision: number; render: number; ortThreads: number } {
-  return { vision: 1, render: 1, ortThreads: 1 }
+  const conservative = { vision: 1, render: 1, ortThreads: 1 }
+
+  // Everything above is about a shared laptop, and stays true there. A
+  // production host is the opposite case — a box whose only job is this app —
+  // and leaving it at 1 worker on 1 thread wastes every other core (one
+  // analysis is ~9s, mostly the parsing model, so 200 photos is ~30 minutes).
+  // Sized only when NODE_ENV=production and an explicit env var did not already
+  // decide; `render.yaml` pins all three to 1 for Render's free plan, so that
+  // deploy is unaffected.
+  if (process.env.NODE_ENV !== 'production') return conservative
+
+  const cores = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length
+  // Inside a container `os.totalmem()` reports the HOST; the cgroup limit is
+  // what the process can actually use.
+  const limit = typeof process.constrainedMemory === 'function' ? process.constrainedMemory() : 0
+  const memoryBytes = limit > 0 && limit < os.totalmem() ? limit : os.totalmem()
+  const memoryGb = memoryBytes / 1024 ** 3
+
+  // One core stays free for the web process; 1.5 GB for it and the OS.
+  const usableCores = Math.max(1, cores - 1)
+  const byMemory = Math.floor((memoryGb - 1.5) / 0.8) // ~700 MB per vision worker
+  const vision = Math.max(1, Math.min(3, byMemory, Math.floor(usableCores / 2)))
+  const ortThreads = Math.max(1, Math.min(4, Math.floor(usableCores / vision)))
+
+  return { vision, render: 1, ortThreads }
 }
 
 const defaults = defaultConcurrency()

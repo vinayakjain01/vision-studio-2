@@ -17,12 +17,14 @@
 import { readImageMetadata } from '@/vision'
 import { putOriginal, hashBytes } from '@/storage/media-store'
 import { imports, images, products, visionAnalyses } from '@/db/repositories'
+import { transaction } from '@/db/client'
 import { enqueue } from '@/jobs/queue'
 import { ensurePoolRunning } from '@/jobs/pool'
 import { ENGINE_VERSION } from '@/vision/model-registry'
 import {
   classifyFile,
   groupIntoProducts,
+  naturalCompare,
   normalizePath,
   toDisplayName,
   slugify,
@@ -229,7 +231,40 @@ async function ingestOne(
   }
 }
 
+/**
+ * Recompute shot order and the primary image for every product in an import.
+ *
+ * Upload batches are bounded by bytes, so a folder's files can arrive in
+ * different requests — and `ingestFiles` only sees the siblings in ITS batch,
+ * so each batch numbers its files from 0 and marks its own first file primary.
+ * Ordering across the whole folder is only knowable once everything is in, so
+ * it is settled here, from the stored file names. This also makes the result
+ * independent of the order batches happen to land in.
+ */
+function renumberImport(importId: string): void {
+  const byProduct = new Map<string, ReturnType<typeof images.listByImport>>()
+  for (const image of images.listByImport(importId, 100000)) {
+    const list = byProduct.get(image.productId)
+    if (list) list.push(image)
+    else byProduct.set(image.productId, [image])
+  }
+
+  transaction(() => {
+    for (const list of byProduct.values()) {
+      list
+        .sort((a, b) => naturalCompare(a.fileName, b.fileName))
+        .forEach((image, index) => {
+          const isPrimary = index === 0
+          if (image.position !== index || image.isPrimary !== isPrimary) {
+            images.setPosition(image.id, index, isPrimary)
+          }
+        })
+    }
+  })
+}
+
 export function finalizeImport(importId: string): ImportRecord | null {
+  renumberImport(importId)
   imports.bump(importId, {}, 'completed')
   return imports.get(importId)
 }

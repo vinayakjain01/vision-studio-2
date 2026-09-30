@@ -401,6 +401,12 @@ export const images = {
       .map(toImage)
   },
 
+  setPosition(id: string, position: number, isPrimary: boolean): void {
+    getDb()
+      .prepare('UPDATE images SET position = ?, is_primary = ?, updated_at = ? WHERE id = ?')
+      .run(position, toInt(isPrimary), nowIso(), id)
+  },
+
   setVisionStatus(id: string, status: VisionStatus): void {
     getDb()
       .prepare('UPDATE images SET vision_status = ?, updated_at = ? WHERE id = ?')
