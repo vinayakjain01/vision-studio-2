@@ -64,7 +64,7 @@ import {
   Toggle,
 } from '@/components/ui/primitives'
 import { cn, humanize } from '@/lib/utils'
-import type { TemplateRecord } from '@/db/types'
+import type { ImportRecord, TemplateRecord } from '@/db/types'
 import type { PreviewSubject } from '@/app/api/preview/subjects/route'
 import type { ProductSummary } from '@/app/api/products/route'
 
@@ -83,17 +83,35 @@ export function TemplateBuilder({ template }: { template: TemplateRecord }) {
   const [showOverlay, setShowOverlay] = React.useState(false)
   const [showDetails, setShowDetails] = React.useState(false)
   const [focusedSubjectId, setFocusedSubjectId] = React.useState<string | null>(null)
+  // Which import (a whole folder-upload session — the "master folder") the
+  // Folder dropdown's options are scoped to. Null until the import list
+  // loads, at which point it defaults to the most recent one.
+  const [selectedImportId, setSelectedImportId] = React.useState<string | null>(null)
   // Which folder's photos the centre preview draws from. Null until the
   // product list loads, at which point it defaults to the first one —
   // deliberately picked, not a sample scattered across the whole catalog.
   const [selectedProductId, setSelectedProductId] = React.useState<string | null>(null)
 
+  const { data: importsData, isLoading: importsLoading } = useSWR<{ imports: ImportRecord[] }>(
+    '/api/imports',
+    fetcher
+  )
+  // Newest first already, per the API's own ordering.
+  const imports = importsData?.imports ?? []
+  const effectiveImportId = selectedImportId ?? imports[0]?.id ?? null
+
   const { data: productsData, isLoading: productsLoading } = useSWR<{ products: ProductSummary[] }>(
-    '/api/products?limit=500',
+    effectiveImportId ? `/api/products?limit=500&importId=${effectiveImportId}` : null,
     fetcher
   )
   const products = productsData?.products ?? []
   const effectiveProductId = selectedProductId ?? products[0]?.id ?? null
+
+  const selectMasterFolder = (importId: string) => {
+    setSelectedImportId(importId)
+    setSelectedProductId(null)
+    setFocusedSubjectId(null)
+  }
 
   const { data: subjectData, isLoading: subjectsLoading } = useSWR<{
     subjects: PreviewSubject[]
@@ -354,9 +372,34 @@ export function TemplateBuilder({ template }: { template: TemplateRecord }) {
           </div>
         </aside>
 
-        {/* Preview — one folder chosen first, then one photo within it. */}
+        {/* Preview — one master folder chosen first, then one folder within
+            it, then one photo within that. */}
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--color-canvas)]">
-          {productsLoading ? (
+          {/* Master Folder selector — hidden with only one import, since a
+              single-option selector picks nothing. Shown above the loading/
+              empty states too, so switching away from an import that has no
+              analysed products yet is never a dead end. */}
+          {imports.length >= 2 && (
+            <div className="flex shrink-0 items-center gap-2 border-b border-[var(--color-border)] px-4 py-2">
+              <span className="text-[11px] font-medium uppercase tracking-wide text-[var(--color-ink-subtle)]">
+                Master Folder
+              </span>
+              <Select
+                aria-label="Preview master folder"
+                value={effectiveImportId ?? ''}
+                onChange={e => selectMasterFolder(e.target.value)}
+                className="h-8 max-w-96 flex-1 text-xs"
+              >
+                {imports.map(importRecord => (
+                  <option key={importRecord.id} value={importRecord.id}>
+                    {importRecord.name}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          )}
+
+          {productsLoading || importsLoading ? (
             <div className="flex flex-1 items-center justify-center gap-2 text-sm text-[var(--color-ink-subtle)]">
               <Loader2 size={15} className="animate-spin" /> Loading products…
             </div>
