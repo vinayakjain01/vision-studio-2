@@ -375,11 +375,12 @@ export function TemplateBuilder({ template }: { template: TemplateRecord }) {
         {/* Preview — one master folder chosen first, then one folder within
             it, then one photo within that. */}
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--color-canvas)]">
-          {/* Master Folder selector — hidden with only one import, since a
-              single-option selector picks nothing. Shown above the loading/
-              empty states too, so switching away from an import that has no
-              analysed products yet is never a dead end. */}
-          {imports.length >= 2 && (
+          {/* Master Folder selector for the empty-state case only — no Folder
+              row to share a line with here, since the current import has no
+              analysed products yet. Keeps switching to a different import
+              from being a dead end. Once products exist, this same selector
+              moves onto the Folder row below instead of appearing twice. */}
+          {imports.length >= 2 && products.length === 0 && (
             <div className="flex shrink-0 items-center gap-2 border-b border-[var(--color-border)] px-4 py-2">
               <span className="text-[11px] font-medium uppercase tracking-wide text-[var(--color-ink-subtle)]">
                 Master Folder
@@ -425,23 +426,46 @@ export function TemplateBuilder({ template }: { template: TemplateRecord }) {
             <>
               {/* Folder selector — always shown once there is at least one
                   product, so switching folders never requires leaving the
-                  preview state below. */}
-              <div className="flex shrink-0 items-center gap-2 border-b border-[var(--color-border)] px-4 py-2">
-                <span className="text-[11px] font-medium uppercase tracking-wide text-[var(--color-ink-subtle)]">
-                  Folder
-                </span>
-                <Select
-                  aria-label="Preview folder"
-                  value={effectiveProductId ?? ''}
-                  onChange={e => selectFolder(e.target.value)}
-                  className="h-8 max-w-96 flex-1 text-xs"
-                >
-                  {products.map(product => (
-                    <option key={product.id} value={product.id}>
-                      {product.name} ({product.imageCount} photo{product.imageCount === 1 ? '' : 's'})
-                    </option>
-                  ))}
-                </Select>
+                  preview state below. Master Folder sits to its right on the
+                  same row once there's more than one import to pick from. */}
+              <div className="flex shrink-0 items-center gap-4 border-b border-[var(--color-border)] px-4 py-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-medium uppercase tracking-wide text-[var(--color-ink-subtle)]">
+                    Folder
+                  </span>
+                  <Select
+                    aria-label="Preview folder"
+                    value={effectiveProductId ?? ''}
+                    onChange={e => selectFolder(e.target.value)}
+                    className="h-8 max-w-96 text-xs"
+                  >
+                    {products.map(product => (
+                      <option key={product.id} value={product.id}>
+                        {product.name} ({product.imageCount} photo{product.imageCount === 1 ? '' : 's'})
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+
+                {imports.length >= 2 && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-medium uppercase tracking-wide text-[var(--color-ink-subtle)]">
+                      Master Folder
+                    </span>
+                    <Select
+                      aria-label="Preview master folder"
+                      value={effectiveImportId ?? ''}
+                      onChange={e => selectMasterFolder(e.target.value)}
+                      className="h-8 max-w-96 text-xs"
+                    >
+                      {imports.map(importRecord => (
+                        <option key={importRecord.id} value={importRecord.id}>
+                          {importRecord.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                )}
               </div>
 
               {subjectsLoading ? (
