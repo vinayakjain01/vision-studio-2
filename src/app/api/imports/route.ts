@@ -10,6 +10,7 @@
 import { NextRequest } from 'next/server'
 import { imports } from '@/db/repositories'
 import { createImport } from '@/import/import-service'
+import { ensurePoolRunning } from '@/jobs/pool'
 import { handler, ok, badRequest } from '@/lib/api'
 
 export const dynamic = 'force-dynamic'
@@ -29,6 +30,11 @@ export const POST = handler(async (request: NextRequest) => {
     typeof body?.rootPath === 'string' ? body.rootPath : undefined,
     typeof body?.totalFiles === 'number' ? body.totalFiles : 0
   )
+
+  // Start the worker pool now, while files are still uploading. Workers spawn
+  // staggered and each loads four ONNX graphs, so starting only after the first
+  // upload batch lands makes the first analysis wait on that cold start.
+  ensurePoolRunning()
 
   return ok({ import: record }, { status: 201 })
 })

@@ -224,7 +224,9 @@ export async function encodeMaskPng(mask: ProbabilityMask): Promise<Buffer> {
   return sharp(Buffer.from(mask.data), {
     raw: { width: mask.width, height: mask.height, channels: 1 },
   })
-    .png({ compressionLevel: 9, effort: 7 })
+    // Lossless either way — level 9 / effort 7 only trades CPU for a few
+    // hundred bytes on a greyscale matte, paid on every analysed image.
+    .png({ compressionLevel: 6 })
     .toBuffer()
 }
 
