@@ -21,6 +21,7 @@ import type {
   Anchors,
   Box,
   FaceDetection,
+  Keypoints,
   PersonDetection,
   ShotClassification,
   ShotSignals,
@@ -97,8 +98,36 @@ const HEAD_KEYPOINTS = ['nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear'
  * eight no-face photos scoring higher, which are models shot from behind or
  * in profile. Photos WITH a face are unaffected either way — they qualify
  * through the face detector, independently of this number.
+ *
+ * A single keypoint clearing 0.7 is not the only way to earn this, though:
+ * see `HEAD_KEYPOINT_PAIRS` below for the other one. A back-facing full-body
+ * photo (1920×1080 studio shot, hips 0.84 / knees 0.82 / ankles 0.75 all
+ * strongly resolved) scored nose 0.679 — inside the documented "with a face"
+ * range (min 0.602) and nowhere near the no-face p90 of 0.538, but just under
+ * this round-number floor — and was misclassified `product_only` on a shot
+ * that plainly has a head in frame, just turned away from the camera.
  */
 const HEAD_KEYPOINT_FLOOR = 0.7
+
+/**
+ * Eye or ear pairs whose BOTH members clearing the engine's general keypoint
+ * threshold (0.3, i.e. `Keypoint.visible`) is treated as evidence of a head,
+ * even when neither member alone reaches `HEAD_KEYPOINT_FLOOR`.
+ *
+ * A hallucinated head keypoint on garment texture fires in isolation — the
+ * documented false positive was nose 0.538 with no symmetric partner reported
+ * — whereas a genuine head, seen at an angle or from behind, produces two
+ * anatomically consistent points at once. Requiring the pair is what lets a
+ * lower bar (0.3 instead of 0.7) stay safe: two independent detections
+ * agreeing on where a head is is stronger evidence than one detection scoring
+ * higher. `estimateHead` in anchors.ts already relies on exactly this
+ * pairing to build head geometry; this mirrors it for classification instead
+ * of inventing a second, different bar.
+ */
+const HEAD_KEYPOINT_PAIRS: readonly (readonly [keyof Keypoints, keyof Keypoints])[] = [
+  ['left_eye', 'right_eye'],
+  ['left_ear', 'right_ear'],
+]
 
 export function classifyShot(ctx: ShotContext): ShotClassification {
   const signals = computeSignals(ctx)
@@ -249,10 +278,13 @@ function computeSignals(ctx: ShotContext): ShotSignals {
   // it only encodes the much lower engine-wide threshold.
   const headKeypointSeen =
     ctx.person != null &&
-    HEAD_KEYPOINTS.some(name => {
+    (HEAD_KEYPOINTS.some(name => {
       const kp = ctx.person!.keypoints[name]
       return kp?.visible === true && kp.score >= HEAD_KEYPOINT_FLOOR
-    })
+    }) ||
+      HEAD_KEYPOINT_PAIRS.some(
+        ([a, b]) => ctx.person!.keypoints[a]?.visible === true && ctx.person!.keypoints[b]?.visible === true
+      ))
 
   const faceHeight = ctx.face ? ctx.face.box.bottom - ctx.face.box.top : 0
   const personHeight = ctx.person ? ctx.person.box.bottom - ctx.person.box.top : 0

@@ -41,6 +41,7 @@
 import { v2 as cloudinary } from 'cloudinary'
 import sharp from 'sharp'
 import { config } from '@/config'
+import type { EdgeContent } from '@/render/boundary-classify'
 
 export class CloudinaryServiceError extends Error {
   constructor(
@@ -97,6 +98,76 @@ function sanitizePrompt(text: string): string {
  */
 const DEFAULT_PROMPT =
   "Seamlessly continue this photograph's existing backdrop floor lighting and shadow beyond its current edges matching colour texture and perspective exactly with no visible seam"
+
+/** Human-readable name for each edge, used inside the garment-continuation clause. */
+const EDGE_NAME: Record<'top' | 'left' | 'right' | 'bottom', string> = {
+  top: 'top',
+  bottom: 'bottom',
+  left: 'left',
+  right: 'right',
+}
+
+/**
+ * Joins edge names into plain prose without commas — `sanitizePrompt` strips
+ * `,;:/|.()[]{}` before this text ever reaches Cloudinary (see its doc
+ * comment for why), so anything built here has to already read correctly
+ * without them rather than relying on sanitisation to leave it coherent.
+ */
+function joinEdgeNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? ''
+  if (names.length === 2) return `${names[0]} and ${names[1]}`
+  return `${names.slice(0, -1).join(' ')} and ${names[names.length - 1]}`
+}
+
+/**
+ * Builds the actual prompt sent to Cloudinary from a base prompt (the
+ * template's `backdropPrompt`, or the generic default) plus per-edge garment
+ * continuation instructions, for the edges `classifyPaddingEdges` found to
+ * be bordered by garment fabric the crop cut through rather than by plain
+ * backdrop.
+ *
+ * ── Why one combined prompt, not one call per edge ──────────────────────────
+ * Cloudinary's `b_gen_fill` takes a single free-text prompt for the whole
+ * padded region in one transformation call — there is no per-region mask or
+ * multiple-prompt parameter in the API this app calls. Splitting the fill
+ * into one Cloudinary request per edge would let each edge get an exact,
+ * separately-masked instruction, but it multiplies the paid-credit cost per
+ * photo by however many edges have padding, which cuts directly against the
+ * cost-consciousness this whole module is built around (see the module doc,
+ * `CLOUDINARY_JOB_CONCURRENCY`'s comment in `config.ts`, and the caching this
+ * function's OUTPUT feeds into `aiExtendCacheKind` to avoid repeating). A
+ * single combined prompt that names which edge the garment continuation
+ * applies to is the version of this fix that respects that constraint — it
+ * relies on the model's ability to localise "at the bottom of the image"
+ * rather than an explicit mask, which is weaker than per-region control but
+ * costs the one credit every other fill already costs.
+ *
+ * ── Everything else about the base prompt is untouched ──────────────────────
+ * Edges classified `skin` or `background` add nothing here — the base prompt
+ * (backdrop/lighting/floor continuation) already produces the right thing on
+ * both, so changing it for those cases risks fixing nothing while breaking
+ * behaviour confirmed to already work.
+ */
+export function buildFillPrompt(basePrompt: string | undefined, edges: EdgeContent): string {
+  const base = basePrompt?.trim() || DEFAULT_PROMPT
+
+  const garmentEdges = (Object.keys(EDGE_NAME) as (keyof typeof EDGE_NAME)[]).filter(
+    edge => edges[edge] === 'garment'
+  )
+  if (garmentEdges.length === 0) return base
+
+  const edgeList = joinEdgeNames(garmentEdges.map(edge => EDGE_NAME[edge]))
+  const plural = garmentEdges.length > 1
+
+  return (
+    `${base} except at the ${edgeList} ${plural ? 'edges' : 'edge'} of the frame where the ` +
+    'visible garment fabric has been cropped by the photo and does not end there continue that ' +
+    'exact same fabric its embroidery pattern colour and natural drape as a direct physical ' +
+    'continuation of the garment beyond that edge rather than inventing where it ends do not ' +
+    'generate skin limbs or any other body part in that specific region and do not generate a ' +
+    'hem cuff or any garment edge or ending there'
+  )
+}
 
 export interface GenerativeFillRequest {
   /** The source photo's own bytes — NOT a padded canvas. See the module doc. */

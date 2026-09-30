@@ -39,8 +39,10 @@ import type {
 import { resolveTemplateVariables } from '@/templates/types'
 import type { VisionMetadata } from '@/vision/types'
 import { config } from '@/config'
-import { resolvePath } from '@/storage/media-store'
+import { resolvePath, readMedia, mediaExists } from '@/storage/media-store'
+import { classifyPaddingEdges, type EdgeContent, type MaskGrid } from './boundary-classify'
 import crypto from 'crypto'
+import sharp from 'sharp'
 
 // ─── Fonts ───────────────────────────────────────────────────────────────────
 
@@ -118,6 +120,36 @@ export interface RenderOutput {
   durationMs: number
 }
 
+/**
+ * `loadImage`, tolerant of PNGs `@napi-rs/canvas`'s Skia decoder rejects that
+ * every other decoder accepts.
+ *
+ * Reproduced directly: a photo carrying a private, spec-conformant ancillary
+ * chunk (`caBX`, 24KB, almost certainly written by whatever AI tool produced
+ * the file) decodes fine in sharp/libvips — which correctly follows the PNG
+ * spec's rule that an unrecognised ancillary chunk (lowercase first letter) is
+ * to be skipped — but makes Skia's loader fail outright. Skia's failure mode
+ * then compounds the problem: having failed every raster decoder, it falls
+ * through to treating the buffer as SVG text and reports "Invalid SVG image",
+ * which names the wrong format entirely and gives no hint that the actual
+ * issue is one PNG chunk.
+ *
+ * A round-trip through sharp re-encodes clean pixel data with none of the
+ * original ancillary chunks, at the cost of a decode+encode this pays only on
+ * the (rare) failure path — the common case is one direct `loadImage` call,
+ * same as before. If sharp can't decode it either, the image is genuinely
+ * broken and this lets that error propagate.
+ */
+async function loadImageTolerant(input: Buffer | string): ReturnType<typeof loadImage> {
+  try {
+    return await loadImage(input)
+  } catch {
+    const bytes = typeof input === 'string' ? fs.readFileSync(input) : input
+    const reencoded = await sharp(bytes).toFormat('png').toBuffer()
+    return loadImage(reencoded)
+  }
+}
+
 export async function renderCreative(input: RenderInput): Promise<RenderOutput> {
   const started = performance.now()
   ensureFonts()
@@ -133,7 +165,7 @@ export async function renderCreative(input: RenderInput): Promise<RenderOutput> 
   const renderW = Math.round(outputSize.width * supersample)
   const renderH = Math.round(outputSize.height * supersample)
 
-  const image = await loadImage(input.source)
+  const image = await loadImageTolerant(input.source)
   const sourceSize = { width: image.width, height: image.height }
 
   // Framing is solved against the TEMPLATE canvas, not the render surface.
@@ -157,7 +189,7 @@ export async function renderCreative(input: RenderInput): Promise<RenderOutput> 
   // `precomputedBackground` doc comment on `RenderInput` for why that call
   // never happens in here.
   const precomputedBackground = input.precomputedBackground
-    ? await loadImage(input.precomputedBackground)
+    ? await loadImageTolerant(input.precomputedBackground)
     : null
 
   const canvas = createCanvas(renderW, renderH)
@@ -538,23 +570,55 @@ function drawSubject(
 
 /**
  * How much of the canvas a photo's solved crop leaves outside itself, without
- * paying for the image encode `buildAiExtendTarget` does. Used to
+ * paying for the image crop-and-encode `buildAiExtendTarget()` does. Used to
  * decide WHETHER a `background_fill` job is even needed (each one costs paid
- * Cloudinary credits) and to compute its cache key — both need only the number,
- * not the pixels — before committing to building them.
+ * Cloudinary credits) and to compute its cache key — both need only the
+ * overflow amounts and the edge classification below, not the cropped pixels
+ * — before committing to building them.
+ *
+ * Also classifies what borders each padding edge (garment / skin / plain
+ * background — see `boundary-classify.ts`), because that classification
+ * feeds the fill PROMPT, and the prompt is what the cache key is
+ * fingerprinted on (`aiExtendCacheKind`). Computing it here, in the one
+ * function both `handleRenderJob`'s cheap cache lookup and
+ * `handleBackgroundFillJob`'s actual generation call use, is what guarantees
+ * the two can never compute different cache keys for the same (photo,
+ * template) pair — they decode the same image, solve the same framing, and
+ * read the same two mask files.
  */
-export async function computeOverflow(
+export async function computeAiExtendPlan(
   source: Buffer,
   vision: VisionMetadata | null,
   template: TemplateDocument
-): Promise<FramingResult['overflow']> {
-  const image = await loadImage(source)
+): Promise<{ overflow: FramingResult['overflow']; edgeContent: EdgeContent }> {
+  const image = await loadImageTolerant(source)
   const subject = toFramingSubject(vision, { width: image.width, height: image.height })
   const framing = solveFraming(subject, template.framing, {
     width: template.canvas.width,
     height: template.canvas.height,
   })
-  return framing.overflow
+
+  const emptyEdges: EdgeContent = { top: null, left: null, right: null, bottom: null }
+  if (!hasOverflow(framing.overflow)) {
+    return { overflow: framing.overflow, edgeContent: emptyEdges }
+  }
+
+  const supersample = Math.max(1, Math.min(3, config.render.supersample))
+  const canvasWidth = Math.round(template.canvas.width * supersample)
+  const canvasHeight = Math.round(template.canvas.height * supersample)
+  const placed = placedRect(image, framing.crop, canvasWidth, canvasHeight)
+  if (!placed) {
+    return { overflow: framing.overflow, edgeContent: emptyEdges }
+  }
+
+  const edgeContent = await classifyAiExtendEdges(
+    image.width,
+    image.height,
+    placed,
+    framing.overflow,
+    vision
+  )
+  return { overflow: framing.overflow, edgeContent }
 }
 
 /** True when there is enough overflow to be worth generating a fill for. */
@@ -563,15 +627,83 @@ export function hasOverflow(overflow: FramingResult['overflow']): boolean {
 }
 
 /**
+ * Reads the garment and person masks the vision engine already persisted for
+ * this photo (see `boundary-classify.ts` for why these two, and not a new
+ * detector) and classifies what touches each padding edge.
+ *
+ * Missing or unreadable masks degrade to "nothing classified" rather than
+ * throwing: an old analysis from before this existed, an accessory-only shot
+ * with no garment detected, or a masking failure all mean there is no
+ * evidence either way, and the fill falls back to exactly the backdrop-only
+ * behaviour that shipped before this feature existed — never a hard failure
+ * over a missing derived asset most photos will have anyway.
+ */
+async function classifyAiExtendEdges(
+  imageWidth: number,
+  imageHeight: number,
+  placed: PlacedRect,
+  overflow: FramingResult['overflow'],
+  vision: VisionMetadata | null
+): Promise<EdgeContent> {
+  const [garmentMask, personMask] = await Promise.all([
+    loadMaskGrid(vision?.segmentation.garment?.ref),
+    loadMaskGrid(vision?.segmentation.person?.ref),
+  ])
+
+  return classifyPaddingEdges({
+    imageWidth,
+    imageHeight,
+    usedSourceX: placed.sourceX,
+    usedSourceY: placed.sourceY,
+    usedSourceWidth: placed.sourceWidth,
+    usedSourceHeight: placed.sourceHeight,
+    overflow,
+    garmentMask,
+    personMask,
+  })
+}
+
+async function loadMaskGrid(ref: string | undefined | null): Promise<MaskGrid | null> {
+  if (!ref) return null
+  try {
+    if (!(await mediaExists('derived', ref))) return null
+    const png = await readMedia('derived', ref)
+    // Encoded as single-channel greyscale (see `encodeMaskPng`), but sharp's
+    // default raw decode promotes it to 3 identical RGB channels — forcing
+    // b-w gets back the one channel that was actually written.
+    const { data, info } = await sharp(png)
+      .raw()
+      .toColourspace('b-w')
+      .toBuffer({ resolveWithObject: true })
+    return {
+      data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+      width: info.width,
+      height: info.height,
+    }
+  } catch {
+    // Same degrade-not-throw reasoning as the caller: a corrupt or
+    // partially-written mask file should fall back to no classification,
+    // not fail the render.
+    return null
+  }
+}
+
+/**
  * The derived-asset "kind" (see `src/storage/media-store.ts`) an AI-Extend
  * background is cached under: the source photo hash is the content-address
  * root, and this is everything else that changes what gets generated for it
  * — the exact padding needed (a photo's framing can change independently of
- * its own pixels) and the prompt (a template's `backdropPrompt` can change
- * without the photo or the padding changing at all). Same inputs, same key,
- * on both the write side (`background_fill` job) and the read side (a render
- * job deciding whether it needs to wait on one) — computed here once so the
- * two can never drift apart from re-deriving it slightly differently.
+ * its own pixels) and the prompt (a template's `backdropPrompt` can change,
+ * or — since the garment-continuation fix — the SAME `backdropPrompt` can
+ * still produce a different final prompt on a different photo, because the
+ * garment-edge clause folded into it depends on what that photo's crop
+ * actually cuts through). Same inputs, same key, on both the write side
+ * (`background_fill` job) and the read side (a render job deciding whether
+ * it needs to wait on one) — computed here once so the two can never drift
+ * apart from re-deriving it slightly differently. Callers MUST pass the
+ * fully-composed prompt (the output of `buildFillPrompt`, not the raw
+ * template field) — see `computeAiExtendPlan`'s doc comment for why the two
+ * call sites cannot disagree as long as they do.
  */
 export function aiExtendCacheKind(overflow: FramingResult['overflow'], prompt: string): string {
   const left = Math.max(0, Math.round(overflow.left))
@@ -605,13 +737,21 @@ export interface AiExtendTarget {
   placedHeight: number
   /** From the same `solveFraming()` call — part of the cache key. */
   overflow: FramingResult['overflow']
+  /**
+   * What borders each padding edge in the SOURCE photo — garment fabric cut
+   * by the crop, skin/body already visible, or plain background. Feeds
+   * `buildFillPrompt()` so the request can ask Cloudinary to continue the
+   * garment rather than invent a body where fabric was simply cropped. See
+   * `boundary-classify.ts` for the classification itself.
+   */
+  edgeContent: EdgeContent
 }
 
 /**
  * Work out exactly what Cloudinary needs to extend this photo to the full
- * canvas: the cropped photo on its own, plus where it lands. Returns `null`
- * when the crop already covers the canvas — nothing to fill, and every call
- * avoided is paid credits not spent.
+ * canvas: the cropped photo on its own, plus where it lands, plus what each
+ * padding edge borders. Returns `null` when the crop already covers the
+ * canvas — nothing to fill, and every call avoided is paid credits not spent.
  *
  * Runs the SAME `solveFraming()` this module always uses for the real render
  * (see the module doc comment — one framing implementation, not two that can
@@ -625,7 +765,7 @@ export async function buildAiExtendTarget(
   vision: VisionMetadata | null,
   template: TemplateDocument
 ): Promise<AiExtendTarget | null> {
-  const image = await loadImage(source)
+  const image = await loadImageTolerant(source)
   const subject = toFramingSubject(vision, { width: image.width, height: image.height })
   const framing = solveFraming(subject, template.framing, {
     width: template.canvas.width,
@@ -653,6 +793,14 @@ export async function buildAiExtendTarget(
 
   const placed = placedRect(image, framing.crop, canvasWidth, canvasHeight)
   if (!placed) return null
+
+  const edgeContent = await classifyAiExtendEdges(
+    image.width,
+    image.height,
+    placed,
+    framing.overflow,
+    vision
+  )
 
   // The photo alone, cropped exactly as the render will crop it and sized to
   // the box it will occupy — so Cloudinary's only job is to pad around it.
@@ -682,6 +830,7 @@ export async function buildAiExtendTarget(
     placedWidth: cut.width,
     placedHeight: cut.height,
     overflow: framing.overflow,
+    edgeContent,
   }
 }
 
@@ -844,7 +993,7 @@ async function drawImageLayer(
 ): Promise<void> {
   if (!layer.assetKey) return
 
-  const asset = await loadImage(resolvePath('assets', layer.assetKey))
+  const asset = await loadImageTolerant(resolvePath('assets', layer.assetKey))
 
   const radius = (layer.borderRadiusPct / 100) * width
   if (radius > 0) {

@@ -12,11 +12,11 @@ import { analyzeStoredImage, getUsableAnalysis, propagateVisionStatus } from '@/
 import {
   renderCreative,
   buildAiExtendTarget,
-  computeOverflow,
+  computeAiExtendPlan,
   hasOverflow,
   aiExtendCacheKind,
 } from '@/render/compositor'
-import { generativeFill, looksLikeCompleteJpeg } from '@/services/cloudinary-service'
+import { generativeFill, looksLikeCompleteJpeg, buildFillPrompt } from '@/services/cloudinary-service'
 import { creatives, images, products, templates, visionAnalyses } from '@/db/repositories'
 import {
   readMedia,
@@ -168,9 +168,13 @@ export async function handleRenderJob(
   // different pool entirely.
   let precomputedBackground: Buffer | null = null
   if (template.document.background.mode === 'ai_extend') {
-    const overflow = await computeOverflow(source, metadata, template.document)
+    const { overflow, edgeContent } = await computeAiExtendPlan(source, metadata, template.document)
     if (hasOverflow(overflow)) {
-      const kind = aiExtendCacheKind(overflow, template.document.background.backdropPrompt)
+      // MUST be the same fully-composed prompt `handleBackgroundFillJob` uses
+      // below — see `aiExtendCacheKind`'s doc comment. `computeAiExtendPlan`
+      // is what guarantees `edgeContent` agrees between the two call sites.
+      const prompt = buildFillPrompt(template.document.background.backdropPrompt, edgeContent)
+      const kind = aiExtendCacheKind(overflow, prompt)
       const key = derivedKey(sourceHash, kind, 'jpg')
 
       const cached = (await mediaExists('derived', key)) ? await readMedia('derived', key) : null
@@ -354,14 +358,16 @@ export async function handleBackgroundFillJob(
     return { skipped: true, reason: 'no overflow to fill' }
   }
 
-  const kind = aiExtendCacheKind(target.overflow, template.document.background.backdropPrompt)
+  // Same composition `handleRenderJob`'s cache lookup uses — see
+  // `aiExtendCacheKind`'s doc comment for why the two must never diverge.
+  const prompt = buildFillPrompt(template.document.background.backdropPrompt, target.edgeContent)
+  const kind = aiExtendCacheKind(target.overflow, prompt)
   const key = derivedKey(sourceHash, kind, 'jpg')
 
   if (await mediaExists('derived', key)) {
     return { skipped: true, reason: 'already cached' }
   }
 
-  const prompt = template.document.background.backdropPrompt?.trim() || undefined
   const result = await generativeFill({
     photo: target.photo,
     canvasWidth: target.canvasWidth,
