@@ -10,6 +10,7 @@ import { BulkGeneratePanel } from '@/components/products/bulk-generate-panel'
 import { humanize, percent } from '@/lib/utils'
 import { Badge, Button, EmptyState, Input, Panel, Select, Spinner } from '@/components/ui/primitives'
 import type { ProductSummary } from '@/app/api/products/route'
+import type { ImportRecord } from '@/db/types'
 
 interface Response {
   products: ProductSummary[]
@@ -23,6 +24,7 @@ const PAGE_SIZE = 60
 export function ProductsClient() {
   const [search, setSearch] = React.useState('')
   const [debounced, setDebounced] = React.useState('')
+  const [importId, setImportId] = React.useState('')
   const [category, setCategory] = React.useState('')
   const [limit, setLimit] = React.useState(PAGE_SIZE)
 
@@ -33,8 +35,12 @@ export function ProductsClient() {
     return () => clearTimeout(timer)
   }, [search])
 
+  const { data: importsData } = useSWR<{ imports: ImportRecord[] }>('/api/imports', fetcher)
+  const imports = importsData?.imports ?? []
+
   const params = new URLSearchParams({ limit: String(limit) })
   if (debounced) params.set('search', debounced)
+  if (importId) params.set('importId', importId)
   if (category) params.set('category', category)
 
   const { data, isLoading, mutate } = useSWR<Response>(`/api/products?${params}`, fetcher, {
@@ -64,6 +70,22 @@ export function ProductsClient() {
           />
         </div>
 
+        {imports.length >= 2 && (
+          <Select
+            aria-label="Master folder"
+            value={importId}
+            onChange={event => setImportId(event.target.value)}
+            className="w-52"
+          >
+            <option value="">All master folders</option>
+            {imports.map(importRecord => (
+              <option key={importRecord.id} value={importRecord.id}>
+                {importRecord.name}
+              </option>
+            ))}
+          </Select>
+        )}
+
         <Select
           value={category}
           onChange={event => setCategory(event.target.value)}
@@ -88,6 +110,7 @@ export function ProductsClient() {
       {!!data?.total && (
         <BulkGeneratePanel
           search={debounced}
+          importId={importId}
           category={category}
           productCount={data.total}
           onGenerated={() => mutate()}
@@ -98,14 +121,14 @@ export function ProductsClient() {
         <Panel>
           <EmptyState
             icon={<Images size={26} />}
-            title={debounced || category ? 'No matching products' : 'No products yet'}
+            title={debounced || importId || category ? 'No matching products' : 'No products yet'}
             description={
-              debounced || category
-                ? 'Try a different search or clear the category filter.'
+              debounced || importId || category
+                ? 'Try a different search, or clear the master folder / category filter.'
                 : 'Import a folder of photographs to get started.'
             }
             action={
-              !debounced && !category ? (
+              !debounced && !importId && !category ? (
                 <Link
                   href="/import"
                   className="inline-flex items-center rounded-md bg-[var(--color-accent)] px-3.5 py-2 text-sm font-medium text-[var(--color-accent-ink)]"
