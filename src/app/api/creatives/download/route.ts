@@ -1,19 +1,25 @@
 /**
  * Download creatives as a ZIP.
  *
- * Two layouts, chosen by `?layout=`:
+ * Three naming behaviours:
  *
- *  - default: `<template>/<product>.<ext>` - filenames built from internal
- *    labels, grouped by template. The original behaviour, unchanged, still
- *    what "Downloads" and the per-product/per-batch links use.
- *  - `catalog`: `<product folder>/<original filename>.<ext>` - the source
- *    image's own import path with the import's own root folder stripped
- *    off (that name becomes the ZIP FILE's own filename instead, see
- *    below), nesting otherwise preserved, extension swapped for whatever
- *    the render actually produced. For the Products page's bulk
- *    generate-then-download flow, where the whole point is handing back a
- *    folder structure that matches the catalog as it was imported, not one
- *    that reveals anything about this app.
+ *  - `?productId=` alone (no `batchId`): a single folder's own download —
+ *    original filenames, flat, ZIP named after the product ("KAF 100.zip").
+ *    Unconditional, not gated on `?layout=`: there's exactly one product in
+ *    play, so there's nothing for a caller to disambiguate by passing it.
+ *    What the Products page's per-folder download link uses.
+ *  - `?layout=catalog` (typically with `?batchId=`, spanning many products):
+ *    `<product folder>/<original filename>.<ext>` - the source image's own
+ *    import path with the import's own root folder stripped off (that name
+ *    becomes the ZIP FILE's own filename instead, see below), nesting
+ *    otherwise preserved. For the Generate page's bulk batch download,
+ *    where the whole point is handing back a folder structure that matches
+ *    the catalog as it was imported, not one that reveals anything about
+ *    this app.
+ *  - default (neither of the above): `<template>/<product>.<ext>` -
+ *    filenames built from internal labels, grouped by template. The
+ *    original behaviour, unchanged, still what "Download all" and the
+ *    older per-batch links use.
  *
  * The catalog layout also names the downloaded ZIP FILE itself after the
  * import it came from ("Men Catalogue.zip"), not a batch label. Both halves
@@ -22,7 +28,10 @@
  * double it up - "Men Catalogue/Men Catalogue/MADA-01/...". Stripping it
  * from the internal paths and moving it to the filename is what makes
  * Explorer's "Extract All" (which always wraps in a folder named after the
- * zip) land on the right structure with exactly one level of nesting.
+ * zip) land on the right structure with exactly one level of nesting. The
+ * product-scoped case follows the same one-level-of-nesting principle: the
+ * ZIP is already named after the folder, so the folder name never also
+ * appears as a path prefix inside it.
  *
  * Streamed rather than buffered. A catalog's worth of 2048px JPEGs is hundreds of
  * megabytes, and holding that in memory to set a Content-Length would risk the
@@ -110,6 +119,14 @@ export const GET = handler(async (request: NextRequest) => {
   const catalogLayout = params.get('layout') === 'catalog'
   const exportOptions = parseExportOptions(params)
 
+  // A single folder's own download — always its original filenames, flat,
+  // same principle as the catalog layout but scoped to one product rather
+  // than a whole import. Checked ahead of `catalogLayout` because this is the
+  // one case that should behave this way regardless of whether the caller
+  // remembered `?layout=catalog`: there is exactly one product in play, so
+  // there's no ambiguity to ask the caller to resolve.
+  const productScoped = !!productId && !batchId
+
   const list = batchId
     ? creatives.listByBatch(batchId, 100000)
     : productId
@@ -149,7 +166,16 @@ export const GET = handler(async (request: NextRequest) => {
     const extension = exported.extension
     let name: string
 
-    if (catalogLayout) {
+    if (productScoped) {
+      // Flat — no folder nesting, since the ZIP IS that one folder already
+      // (its own filename is the product's name, set below). Just the
+      // original photo's filename with its extension swapped for whatever
+      // was actually exported.
+      const image = images.get(creative.imageId)
+      const original = image?.fileName ?? creative.imageId
+      const baseName = original.replace(/\.[^./]+$/, '') || 'untitled'
+      name = `${safeSegment(baseName)}.${extension}`
+    } else if (catalogLayout) {
       const image = images.get(creative.imageId)
       const product = products.get(creative.productId)
       const importRecord = product?.importId ? imports.get(product.importId) : null
@@ -182,8 +208,9 @@ export const GET = handler(async (request: NextRequest) => {
   // is the older template-grouped layout) keeps the existing descriptive
   // name; a collision on repeat downloads is the browser's problem to solve
   // (it already does, appending "(1)", "(2)", ...), not this route's.
-  const filename =
-    catalogLayout && singleImportName && !sawMultipleImports
+  const filename = productScoped
+    ? `${safeSegment(products.get(productId!)?.name ?? 'product')}.zip`
+    : catalogLayout && singleImportName && !sawMultipleImports
       ? `${safeSegment(singleImportName)}.zip`
       : `vision-studio-${
           batchId
