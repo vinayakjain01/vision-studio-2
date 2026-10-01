@@ -7,9 +7,9 @@
  * Distinct from the Rules-based Generate page on purpose: this is a
  * deliberate override ("apply this exact design to every one of these
  * products"), not rule resolution, and it is scoped to whatever the
- * Products page's own search/master-folder/category filters currently
- * show — the same scope the operator is already looking at, not a separate
- * selection step.
+ * Products page's own search/master-folder filters currently show — the
+ * same scope the operator is already looking at, not a separate selection
+ * step.
  *
  * Uses the same batch queue and progress-polling pattern as
  * `ProductGeneratePanel` (the per-product version on the product detail
@@ -28,14 +28,12 @@ import type { BatchRecord, TemplateRecord } from '@/db/types'
 export function BulkGeneratePanel({
   search,
   importId,
-  category,
   productCount,
   onGenerated,
 }: {
   /** Current Products-page filters — the bulk action's scope. */
   search: string
   importId: string
-  category: string
   /** How many products currently match, just for the button's label. */
   productCount: number
   onGenerated: () => void
@@ -81,7 +79,6 @@ export function BulkGeneratePanel({
         {
           search: search || undefined,
           importId: importId || undefined,
-          category: category || undefined,
           templateId,
           allImages: true,
         }
@@ -100,7 +97,7 @@ export function BulkGeneratePanel({
   }
 
   const scopeLabel =
-    search || importId || category
+    search || importId
       ? `the ${productCount} product${productCount === 1 ? '' : 's'} currently shown`
       : `all ${productCount} product${productCount === 1 ? '' : 's'}`
 

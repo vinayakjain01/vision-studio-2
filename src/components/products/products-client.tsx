@@ -15,7 +15,6 @@ import type { ImportRecord } from '@/db/types'
 interface Response {
   products: ProductSummary[]
   total: number
-  categories: { category: string; count: number }[]
   hasMore: boolean
 }
 
@@ -25,7 +24,6 @@ export function ProductsClient() {
   const [search, setSearch] = React.useState('')
   const [debounced, setDebounced] = React.useState('')
   const [importId, setImportId] = React.useState('')
-  const [category, setCategory] = React.useState('')
   const [limit, setLimit] = React.useState(PAGE_SIZE)
 
   // Debounce the search so typing does not fire a query per keystroke against
@@ -41,7 +39,6 @@ export function ProductsClient() {
   const params = new URLSearchParams({ limit: String(limit) })
   if (debounced) params.set('search', debounced)
   if (importId) params.set('importId', importId)
-  if (category) params.set('category', category)
 
   const { data, isLoading, mutate } = useSWR<Response>(`/api/products?${params}`, fetcher, {
     keepPreviousData: true,
@@ -86,19 +83,6 @@ export function ProductsClient() {
           </Select>
         )}
 
-        <Select
-          value={category}
-          onChange={event => setCategory(event.target.value)}
-          className="w-52"
-        >
-          <option value="">All categories</option>
-          {(data?.categories ?? []).map(entry => (
-            <option key={entry.category} value={entry.category}>
-              {entry.category} ({entry.count})
-            </option>
-          ))}
-        </Select>
-
         {data && (
           <span className="numeric text-xs text-[var(--color-ink-subtle)]">
             {data.total} product{data.total === 1 ? '' : 's'}
@@ -111,7 +95,6 @@ export function ProductsClient() {
         <BulkGeneratePanel
           search={debounced}
           importId={importId}
-          category={category}
           productCount={data.total}
           onGenerated={() => mutate()}
         />
@@ -121,14 +104,14 @@ export function ProductsClient() {
         <Panel>
           <EmptyState
             icon={<Images size={26} />}
-            title={debounced || importId || category ? 'No matching products' : 'No products yet'}
+            title={debounced || importId ? 'No matching products' : 'No products yet'}
             description={
-              debounced || importId || category
-                ? 'Try a different search, or clear the master folder / category filter.'
+              debounced || importId
+                ? 'Try a different search, or clear the master folder filter.'
                 : 'Import a folder of photographs to get started.'
             }
             action={
-              !debounced && !importId && !category ? (
+              !debounced && !importId ? (
                 <Link
                   href="/import"
                   className="inline-flex items-center rounded-md bg-[var(--color-accent)] px-3.5 py-2 text-sm font-medium text-[var(--color-accent-ink)]"
