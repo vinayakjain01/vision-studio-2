@@ -36,6 +36,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import JSZip from 'jszip'
 import { creatives, images, imports, products, templates, batches } from '@/db/repositories'
 import { readMedia } from '@/storage/media-store'
+import { convertForExport, parseExportOptions } from '@/render/export-image'
 import { handler, badRequest } from '@/lib/api'
 
 export const dynamic = 'force-dynamic'
@@ -107,6 +108,7 @@ export const GET = handler(async (request: NextRequest) => {
   const batchId = params.get('batchId')
   const productId = params.get('productId')
   const catalogLayout = params.get('layout') === 'catalog'
+  const exportOptions = parseExportOptions(params)
 
   const list = batchId
     ? creatives.listByBatch(batchId, 100000)
@@ -138,7 +140,13 @@ export const GET = handler(async (request: NextRequest) => {
       continue
     }
 
-    const extension = creative.mimeType === 'image/png' ? 'png' : 'jpg'
+    // A no-op when exportOptions is empty — returns `bytes` as-is and derives
+    // `extension` from the stored mime type exactly as the inline ternary
+    // this replaced did, so a plain `/api/creatives/download` with no export
+    // params produces byte-identical output to before this existed.
+    const exported = await convertForExport(bytes, creative.mimeType, creative.width, exportOptions)
+    bytes = exported.bytes
+    const extension = exported.extension
     let name: string
 
     if (catalogLayout) {

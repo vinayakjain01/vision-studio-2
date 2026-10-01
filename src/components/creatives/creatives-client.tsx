@@ -8,6 +8,12 @@ import { fetcher } from '@/lib/api'
 import { DeleteButton } from '@/components/ui/delete-button'
 import { Badge, Button, EmptyState, Panel, Tabs } from '@/components/ui/primitives'
 import { formatBytes, timeAgo } from '@/lib/utils'
+import {
+  DEFAULT_EXPORT_SETTINGS,
+  ExportOptionsFields,
+  exportQueryString,
+  type ExportSettings,
+} from './export-options'
 
 interface Creative {
   id: string
@@ -35,6 +41,8 @@ const PAGE_SIZE = 60
 export function CreativesClient() {
   const [limit, setLimit] = React.useState(PAGE_SIZE)
   const [filter, setFilter] = React.useState<Filter>('all')
+  const [exportSettings, setExportSettings] = React.useState<ExportSettings>(DEFAULT_EXPORT_SETTINGS)
+  const exportSuffix = exportQueryString(exportSettings)
 
   const { data, isLoading, mutate } = useSWR<{ creatives: Creative[]; total: number; hasMore: boolean }>(
     `/api/creatives?limit=${limit}`,
@@ -86,13 +94,14 @@ export function CreativesClient() {
               {data.total} image{data.total === 1 ? '' : 's'}
             </span>
           )}
+          <ExportOptionsFields settings={exportSettings} onChange={setExportSettings} />
           {/* A plain anchor, not a fetch and not next/link: the browser streams
               the ZIP straight to disk with its own progress UI, and nothing is
               held in page memory. `next/link` would client-side navigate to a
               route handler, which downloads nothing. */}
           {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
           <a
-            href="/api/creatives/download"
+            href={`/api/creatives/download${exportSuffix}`}
             className="inline-flex h-9 items-center gap-2 rounded-md bg-[var(--color-accent)] px-3.5 text-sm font-medium text-[var(--color-accent-ink)] transition-[filter] hover:brightness-110"
           >
             <Download size={14} />
@@ -140,7 +149,7 @@ export function CreativesClient() {
                   <p className="min-w-0 truncate text-xs font-medium">{creative.productName}</p>
                   <span className="flex shrink-0 items-center">
                     <a
-                      href={creative.url}
+                      href={`/api/creatives/${creative.id}/export${exportSuffix}`}
                       download
                       className="p-1 text-[var(--color-ink-subtle)] transition-colors hover:text-[var(--color-ink)]"
                       aria-label="Download"

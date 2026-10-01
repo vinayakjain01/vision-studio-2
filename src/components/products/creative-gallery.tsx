@@ -10,6 +10,12 @@ import { formatBytes, timeAgo } from '@/lib/utils'
 import type { ProductImageDetail } from '@/app/api/products/[productId]/route'
 import type { FramingResult } from '@/framing/types'
 import type { TemplateRecord } from '@/db/types'
+import {
+  DEFAULT_EXPORT_SETTINGS,
+  ExportOptionsFields,
+  exportQueryString,
+  type ExportSettings,
+} from '@/components/creatives/export-options'
 
 interface Creative {
   id: string
@@ -36,6 +42,8 @@ export function CreativeGallery({
 
   const [templateId, setTemplateId] = React.useState('')
   const [rendering, setRendering] = React.useState(false)
+  const [exportSettings, setExportSettings] = React.useState<ExportSettings>(DEFAULT_EXPORT_SETTINGS)
+  const exportSuffix = exportQueryString(exportSettings)
 
   const render = async () => {
     if (!templateId) return
@@ -95,56 +103,61 @@ export function CreativeGallery({
           />
         </Panel>
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {creatives.map(creative => (
-            <Panel key={creative.id} className="overflow-hidden">
-              <div className="bg-[var(--color-canvas)]">
-                <img
-                  src={creative.url}
-                  alt={creative.templateName}
-                  className="block h-auto w-full"
-                  loading="lazy"
-                />
-              </div>
-              <div className="space-y-1.5 px-3 py-2.5">
-                <div className="flex items-start justify-between gap-2">
-                  <p className="min-w-0 truncate text-xs font-medium">{creative.templateName}</p>
-                  <a
-                    href={creative.url}
-                    download
-                    className="shrink-0 text-[var(--color-ink-subtle)] transition-colors hover:text-[var(--color-ink)]"
-                    aria-label="Download"
-                  >
-                    <Download size={13} />
-                  </a>
+        <>
+          <div className="flex justify-end">
+            <ExportOptionsFields settings={exportSettings} onChange={setExportSettings} />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {creatives.map(creative => (
+              <Panel key={creative.id} className="overflow-hidden">
+                <div className="bg-[var(--color-canvas)]">
+                  <img
+                    src={creative.url}
+                    alt={creative.templateName}
+                    className="block h-auto w-full"
+                    loading="lazy"
+                  />
                 </div>
-
-                <p className="numeric text-[11px] text-[var(--color-ink-subtle)]">
-                  {creative.width} × {creative.height} · {formatBytes(creative.byteSize)} ·{' '}
-                  {creative.renderMs}ms
-                </p>
-
-                {creative.framing && (
-                  <div className="flex flex-wrap items-center gap-1">
-                    <Badge tone={creative.framing.usedFallback ? 'warning' : 'neutral'}>
-                      {creative.framing.strategyLabel}
-                    </Badge>
-                    {creative.framing.violations.length > 0 && (
-                      <Badge tone="warning">
-                        {creative.framing.violations.length} constraint
-                        {creative.framing.violations.length === 1 ? '' : 's'}
-                      </Badge>
-                    )}
+                <div className="space-y-1.5 px-3 py-2.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="min-w-0 truncate text-xs font-medium">{creative.templateName}</p>
+                    <a
+                      href={`/api/creatives/${creative.id}/export${exportSuffix}`}
+                      download
+                      className="shrink-0 text-[var(--color-ink-subtle)] transition-colors hover:text-[var(--color-ink)]"
+                      aria-label="Download"
+                    >
+                      <Download size={13} />
+                    </a>
                   </div>
-                )}
 
-                <p className="text-[10px] text-[var(--color-ink-subtle)]">
-                  {timeAgo(creative.createdAt)}
-                </p>
-              </div>
-            </Panel>
-          ))}
-        </div>
+                  <p className="numeric text-[11px] text-[var(--color-ink-subtle)]">
+                    {creative.width} × {creative.height} · {formatBytes(creative.byteSize)} ·{' '}
+                    {creative.renderMs}ms
+                  </p>
+
+                  {creative.framing && (
+                    <div className="flex flex-wrap items-center gap-1">
+                      <Badge tone={creative.framing.usedFallback ? 'warning' : 'neutral'}>
+                        {creative.framing.strategyLabel}
+                      </Badge>
+                      {creative.framing.violations.length > 0 && (
+                        <Badge tone="warning">
+                          {creative.framing.violations.length} constraint
+                          {creative.framing.violations.length === 1 ? '' : 's'}
+                        </Badge>
+                      )}
+                    </div>
+                  )}
+
+                  <p className="text-[10px] text-[var(--color-ink-subtle)]">
+                    {timeAgo(creative.createdAt)}
+                  </p>
+                </div>
+              </Panel>
+            ))}
+          </div>
+        </>
       )}
     </div>
   )

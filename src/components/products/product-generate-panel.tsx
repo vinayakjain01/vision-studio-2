@@ -17,6 +17,12 @@ import { Download, Loader2, Play } from 'lucide-react'
 import { fetcher, postJson } from '@/lib/api'
 import { Button, Panel, PanelHeader, Progress, Select } from '@/components/ui/primitives'
 import type { BatchRecord, TemplateRecord } from '@/db/types'
+import {
+  DEFAULT_EXPORT_SETTINGS,
+  ExportOptionsFields,
+  exportQueryString,
+  type ExportSettings,
+} from '@/components/creatives/export-options'
 
 export function ProductGeneratePanel({
   productId,
@@ -35,6 +41,7 @@ export function ProductGeneratePanel({
   const [templateId, setTemplateId] = React.useState('')
   const [starting, setStarting] = React.useState(false)
   const [batchId, setBatchId] = React.useState<string | null>(null)
+  const [exportSettings, setExportSettings] = React.useState<ExportSettings>(DEFAULT_EXPORT_SETTINGS)
 
   // `onSuccess` fires once per completed fetch, which is the right place to
   // react to "the batch just finished" — unlike an effect watching derived
@@ -120,9 +127,10 @@ export function ProductGeneratePanel({
           a button: the browser streams the ZIP straight to disk, which a
           fetch-based click handler would only get in the way of. */}
       {hasCreatives && (
-        <div className="flex justify-end border-t border-[var(--color-border)] px-4 py-3">
+        <div className="flex items-center justify-end gap-3 border-t border-[var(--color-border)] px-4 py-3">
+          <ExportOptionsFields settings={exportSettings} onChange={setExportSettings} />
           <a
-            href={`/api/creatives/download?productId=${productId}`}
+            href={`/api/creatives/download?productId=${productId}${exportQueryString(exportSettings).replace('?', '&')}`}
             className="inline-flex h-9 items-center gap-2 rounded-md bg-[var(--color-accent)] px-3.5 text-sm font-medium text-[var(--color-accent-ink)] transition-colors select-none hover:brightness-110"
           >
             <Download size={14} />
