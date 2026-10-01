@@ -24,6 +24,12 @@ import { Download, Loader2, Play } from 'lucide-react'
 import { fetcher, postJson } from '@/lib/api'
 import { Button, Panel, Progress, Select } from '@/components/ui/primitives'
 import type { BatchRecord, TemplateRecord } from '@/db/types'
+import {
+  DEFAULT_EXPORT_SETTINGS,
+  ExportOptionsFields,
+  exportQueryString,
+  type ExportSettings,
+} from '@/components/creatives/export-options'
 
 export function BulkGeneratePanel({
   search,
@@ -50,6 +56,7 @@ export function BulkGeneratePanel({
   // reflects the latest generation" only needs the last completed run, not
   // a history of every one.
   const [downloadBatchId, setDownloadBatchId] = React.useState<string | null>(null)
+  const [exportSettings, setExportSettings] = React.useState<ExportSettings>(DEFAULT_EXPORT_SETTINGS)
 
   const { data: progress } = useSWR<{ batch: BatchRecord }>(
     batchId ? `/api/batches/${batchId}` : null,
@@ -125,13 +132,18 @@ export function BulkGeneratePanel({
         </Button>
 
         {downloadBatchId && !running && (
-          <a
-            href={`/api/creatives/download?batchId=${downloadBatchId}&layout=catalog`}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-[var(--color-accent)] px-3 text-xs font-medium text-[var(--color-accent-ink)] transition-colors hover:brightness-110"
-          >
-            <Download size={13} />
-            Download
-          </a>
+          <>
+            <ExportOptionsFields settings={exportSettings} onChange={setExportSettings} />
+            <a
+              href={`/api/creatives/download?batchId=${downloadBatchId}&layout=catalog${exportQueryString(
+                exportSettings
+              ).replace('?', '&')}`}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-[var(--color-accent)] px-3 text-xs font-medium text-[var(--color-accent-ink)] transition-colors hover:brightness-110"
+            >
+              <Download size={13} />
+              Download
+            </a>
+          </>
         )}
 
         <span className="text-[11px] text-[var(--color-ink-subtle)]">
