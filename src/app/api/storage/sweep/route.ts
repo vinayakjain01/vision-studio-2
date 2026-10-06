@@ -9,7 +9,7 @@
 import { config } from '@/config'
 import { listMediaKeys, statMedia, type MediaRoot } from '@/storage/media-store'
 import { sweepOrphanedMedia } from '@/services/cleanup-service'
-import { handler, ok } from '@/lib/api'
+import { handler, ok } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300

@@ -14,7 +14,7 @@ import { MODEL_LIST } from '@/vision/model-registry'
 import { config } from '@/config'
 import fs from 'fs'
 import path from 'path'
-import { handler, ok } from '@/lib/api'
+import { handler, ok } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 

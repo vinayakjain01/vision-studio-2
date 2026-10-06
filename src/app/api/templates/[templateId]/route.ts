@@ -9,7 +9,7 @@
 import { NextRequest } from 'next/server'
 import { templates } from '@/db/repositories'
 import { TEMPLATE_SCHEMA_VERSION, type TemplateDocument } from '@/templates/types'
-import { handler, ok, badRequest, notFound } from '@/lib/api'
+import { handler, ok, badRequest, notFound } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 

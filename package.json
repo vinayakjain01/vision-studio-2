@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:reset": "tsx scripts/migrate.ts --reset",
+    "tenants:migrate-legacy": "tsx scripts/tenants-migrate-legacy.ts",
     "models:fetch": "tsx scripts/fetch-models.ts",
     "models:verify": "tsx scripts/fetch-models.ts --verify-only",
     "worker": "tsx src/jobs/runner.ts",
@@ -19,6 +20,7 @@
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.3",
+    "argon2": "^0.45.1",
     "better-sqlite3": "^13.0.2",
     "cloudinary": "^2.10.0",
     "clsx": "^2.1.1",

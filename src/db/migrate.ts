@@ -10,10 +10,13 @@
 
 import fs from 'fs'
 import path from 'path'
-import { getDb, nowIso, type Db } from './client'
+import { nowIso, type Db } from './client'
 
 const SCHEMA_FILE = path.join(process.cwd(), 'src', 'db', 'schema.sql')
 const MIGRATIONS_DIR = path.join(process.cwd(), 'src', 'db', 'migrations')
+
+const CONTROL_SCHEMA_FILE = path.join(process.cwd(), 'src', 'db', 'control-schema.sql')
+const CONTROL_MIGRATIONS_DIR = path.join(process.cwd(), 'src', 'db', 'control-migrations')
 
 export interface MigrateResult {
   baselineApplied: boolean
@@ -21,16 +24,32 @@ export interface MigrateResult {
   skipped: string[]
 }
 
-export function migrate(db: Db = getDb()): MigrateResult {
-  const schema = fs.readFileSync(SCHEMA_FILE, 'utf8')
+/**
+ * Apply a schema (baseline + versioned migrations) to one open handle.
+ *
+ * Takes the handle explicitly rather than defaulting to the global
+ * singleton `getDb()` used to provide — that singleton no longer exists:
+ * `getDb()` is tenant-context-dependent now (see `client.ts`), and this
+ * function runs against tenant handles, the control-plane handle, and
+ * handles opened directly by maintenance scripts outside any request
+ * context. Every call site must now say which handle and which schema.
+ */
+export function migrate(
+  db: Db,
+  options?: { schemaFile?: string; migrationsDir?: string }
+): MigrateResult {
+  const schemaFile = options?.schemaFile ?? SCHEMA_FILE
+  const migrationsDir = options?.migrationsDir ?? MIGRATIONS_DIR
+
+  const schema = fs.readFileSync(schemaFile, 'utf8')
   db.exec(schema)
 
   const result: MigrateResult = { baselineApplied: true, applied: [], skipped: [] }
 
-  if (!fs.existsSync(MIGRATIONS_DIR)) return result
+  if (!fs.existsSync(migrationsDir)) return result
 
   const files = fs
-    .readdirSync(MIGRATIONS_DIR)
+    .readdirSync(migrationsDir)
     .filter(f => f.endsWith('.sql'))
     .sort()
 
@@ -42,7 +61,7 @@ export function migrate(db: Db = getDb()): MigrateResult {
       result.skipped.push(file)
       continue
     }
-    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8')
+    const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8')
     // Each migration is atomic: either the whole file applies and is recorded,
     // or nothing changes and the error propagates.
     db.transaction(() => {
@@ -55,12 +74,18 @@ export function migrate(db: Db = getDb()): MigrateResult {
   return result
 }
 
+/** `migrate()` against the control-plane schema instead of a tenant's. */
+export function migrateControl(db: Db): MigrateResult {
+  return migrate(db, { schemaFile: CONTROL_SCHEMA_FILE, migrationsDir: CONTROL_MIGRATIONS_DIR })
+}
+
 /**
- * Drop every application table. Used by `npm run db:reset`. Media on disk is
- * NOT touched — originals are the source of truth and re-importing them
- * rebuilds everything else.
+ * Drop every application table in a TENANT database. Used by `npm run
+ * db:reset`. Media on disk is NOT touched — originals are the source of
+ * truth and re-importing them rebuilds everything else. Never call this
+ * against the control-plane handle — it does not have these tables.
  */
-export function dropAll(db: Db = getDb()): void {
+export function dropAll(db: Db): void {
   const tables = [
     'creatives',
     'jobs',

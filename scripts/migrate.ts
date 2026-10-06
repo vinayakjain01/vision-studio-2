@@ -1,47 +1,48 @@
 /**
- * CLI: apply the schema.
+ * CLI: apply schemas.
  *
- *   npm run db:migrate          apply baseline + pending migrations
- *   npm run db:reset            drop all tables, then re-apply
+ *   npm run db:migrate          control.db baseline+migrations, then every
+ *                               tenant's app.db
+ *   npm run db:reset            drop all tenant tables, then re-apply
+ *                               (control.db is NEVER dropped by --reset —
+ *                               that would delete every account and tenant
+ *                               record; see `npm run db:reset` in
+ *                               package.json if a control-plane reset is
+ *                               ever genuinely needed, which it isn't here)
  */
 
-import fs from 'fs'
-import { config } from '../src/config'
-import { getDb, closeDb } from '../src/db/client'
-import { migrate, dropAll } from '../src/db/migrate'
+import { getControlDb, openTenantDbById, closeDb } from '../src/db/client'
+import { migrate, migrateControl, dropAll } from '../src/db/migrate'
+import { tenants } from '../src/db/control-repositories'
+import { ensureMediaRoots } from '../src/storage/media-store'
 
 function main() {
   const reset = process.argv.includes('--reset')
 
-  // Ensure every media root exists so the first upload does not race on mkdir.
-  for (const dir of [
-    config.paths.dataDir,
-    config.paths.originals,
-    config.paths.derived,
-    config.paths.creatives,
-    config.paths.assets,
-  ]) {
-    fs.mkdirSync(dir, { recursive: true })
+  const controlDb = getControlDb()
+  migrateControl(controlDb)
+  console.log(`  control.db   migrated`)
+
+  const list = tenants.list()
+  if (list.length === 0) {
+    console.log('  no tenants yet — run `npm run tenants:migrate-legacy` or create one first')
   }
 
-  const db = getDb()
+  for (const tenant of list) {
+    ensureMediaRoots(tenant.id)
+    const db = openTenantDbById(tenant.id)
 
-  if (reset) {
-    console.log('  dropping all tables (media on disk is preserved)')
-    dropAll(db)
+    if (reset) {
+      console.log(`  [${tenant.id}] dropping all tables (media on disk is preserved)`)
+      dropAll(db)
+    }
+
+    const result = migrate(db)
+    const summary = result.applied.length
+      ? `migrations: ${result.applied.join(', ')}`
+      : `up to date (${result.skipped.length} previously applied)`
+    console.log(`  [${tenant.id}] ${tenant.name} — ${summary}`)
   }
-
-  const result = migrate(db)
-
-  console.log(`  database   ${config.paths.database}`)
-  console.log(`  baseline   applied`)
-  if (result.applied.length) console.log(`  migrations ${result.applied.join(', ')}`)
-  if (result.skipped.length) console.log(`  up to date ${result.skipped.length} previously applied`)
-
-  const tables = db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-    .all() as { name: string }[]
-  console.log(`  tables     ${tables.map(t => t.name).join(', ')}`)
 
   closeDb()
   console.log('\n✓ schema ready')

@@ -46,7 +46,7 @@ import JSZip from 'jszip'
 import { creatives, images, imports, products, templates, batches } from '@/db/repositories'
 import { readMedia } from '@/storage/media-store'
 import { convertForExport, parseExportOptions } from '@/render/export-image'
-import { handler, badRequest } from '@/lib/api'
+import { handler, badRequest } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 600

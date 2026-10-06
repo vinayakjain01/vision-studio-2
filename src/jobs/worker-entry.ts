@@ -31,6 +31,8 @@ import { handleVisionJob, handleRenderJob, handleBackgroundFillJob, BackgroundNo
 import { CloudinaryServiceError } from '@/services/cloudinary-service'
 import { closeDb } from '@/db/client'
 import { VisionUnavailableError } from '@/vision/types'
+import { runWithTenant } from '@/tenancy/context'
+import { resolveDefaultTenantId } from './default-tenant'
 import type { BackgroundFillJobPayload, JobKind, RenderJobPayload, VisionJobPayload } from '@/db/types'
 
 interface WorkerConfig {
@@ -281,7 +283,12 @@ process.on('disconnect', () => {
   running = false
 })
 
-loop()
+// P1 bridge — see src/jobs/default-tenant.ts's doc comment: the whole
+// process runs as one tenant until P3's global queue carries a tenantId per
+// job. AsyncLocalStorage propagates through every await inside `loop()`,
+// including its own setTimeout-based backoff, so this one wrapper covers
+// the worker's entire lifetime.
+runWithTenant({ tenantId: resolveDefaultTenantId(), userId: 'system', role: 'owner' }, loop)
   .catch(err => {
     console.error(`[worker ${cfg.workerId}] fatal:`, err)
     process.exitCode = 1

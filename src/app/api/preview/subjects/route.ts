@@ -16,7 +16,7 @@ import { NextRequest } from 'next/server'
 import { images, products } from '@/db/repositories'
 import { getUsableAnalysis } from '@/services/vision-service'
 import { mediaUrl } from '@/storage/media-store'
-import { handler, ok } from '@/lib/api'
+import { handler, ok } from '@/lib/api-handler'
 import type { Anchors, Box, ShotType, Size } from '@/vision/types'
 
 export const dynamic = 'force-dynamic'

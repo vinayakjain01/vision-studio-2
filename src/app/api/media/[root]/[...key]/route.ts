@@ -11,7 +11,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { statMedia, readMedia, type MediaRoot } from '@/storage/media-store'
-import { handler, badRequest, notFound } from '@/lib/api'
+import { handler, badRequest, notFound } from '@/lib/api-handler'
 
 const ROOTS: MediaRoot[] = ['originals', 'derived', 'creatives', 'assets']
 

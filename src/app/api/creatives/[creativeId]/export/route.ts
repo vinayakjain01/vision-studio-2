@@ -15,7 +15,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { creatives, images } from '@/db/repositories'
 import { readMedia } from '@/storage/media-store'
 import { convertForExport, parseExportOptions, withExtension } from '@/render/export-image'
-import { handler, notFound } from '@/lib/api'
+import { handler, notFound } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60

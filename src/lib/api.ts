@@ -1,50 +1,15 @@
 /**
- * Route-handler helpers.
+ * Browser-side fetch helpers for SWR and client components.
  *
- * Consistent JSON envelopes and one place where an unhandled throw becomes a
- * 500 with a logged stack rather than an opaque Next.js error page.
+ * Deliberately dependency-free beyond the global `fetch` — safe to import
+ * from any client component. Route-handler-side helpers (`handler`, `ok`,
+ * `badRequest`, ...) live in `src/lib/api-handler.ts` instead, a separate
+ * module specifically so this one never pulls in server-only code
+ * (ultimately better-sqlite3, through the auth/tenancy chain `handler()`
+ * needs) that webpack can't bundle for the browser. See that file's doc
+ * comment for the exact breakage this split fixes.
  */
 
-import { NextResponse } from 'next/server'
-
-export function ok<T>(data: T, init?: ResponseInit): NextResponse {
-  return NextResponse.json(data as any, init)
-}
-
-export function badRequest(message: string, details?: unknown): NextResponse {
-  return NextResponse.json({ error: message, details }, { status: 400 })
-}
-
-export function notFound(message = 'not found'): NextResponse {
-  return NextResponse.json({ error: message }, { status: 404 })
-}
-
-export function serverError(message: string, details?: unknown): NextResponse {
-  return NextResponse.json({ error: message, details }, { status: 500 })
-}
-
-/**
- * Wrap a handler so any throw becomes a logged 500.
- *
- * Without this a failure inside a route surfaces as an empty response and the
- * cause only appears in the server console — during a bulk import that is the
- * difference between "the upload stalled" and a message naming the file.
- */
-export function handler<Args extends unknown[]>(
-  fn: (...args: Args) => Promise<NextResponse> | NextResponse
-) {
-  return async (...args: Args): Promise<NextResponse> => {
-    try {
-      return await fn(...args)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      console.error('[api]', err)
-      return serverError(message)
-    }
-  }
-}
-
-/** Browser-side fetcher for SWR. Throws on non-2xx so SWR surfaces the error. */
 export async function fetcher<T>(url: string): Promise<T> {
   const response = await fetch(url)
   if (!response.ok) {

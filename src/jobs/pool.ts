@@ -35,6 +35,8 @@ import type { ChildProcess } from 'child_process'
 import { config } from '@/config'
 import * as queue from './queue'
 import { batches } from '@/db/repositories'
+import { runWithTenant } from '@/tenancy/context'
+import { resolveDefaultTenantId } from './default-tenant'
 import type { JobKind } from '@/db/types'
 import type { WorkerMessage } from './worker-entry'
 
@@ -57,6 +59,19 @@ interface WorkerHandle {
 /** A worker that crashes this many times is not respawned again. */
 const MAX_RESTARTS = 5
 
+/**
+ * This pool is a singleton living in the WEB process (started via
+ * `ensurePoolRunning()`, called from inside an already-tenant-scoped API
+ * route). But `start()`'s own `reclaimStale()` call, the 60s sweeper, and
+ * `refreshBatch()` (triggered later by an IPC message from a child worker)
+ * all run detached from any specific request's `TenantContext` — so each
+ * needs its own binding. Same P1 bridge as the worker processes themselves;
+ * see `src/jobs/default-tenant.ts`.
+ */
+function withDefaultTenant<T>(fn: () => T): T {
+  return runWithTenant({ tenantId: resolveDefaultTenantId(), userId: 'system', role: 'owner' }, fn)
+}
+
 class WorkerPool {
   private handles: WorkerHandle[] = []
   private started = false
@@ -76,7 +91,7 @@ class WorkerPool {
 
     // A previous run may have died mid-job. Return anything abandoned to the
     // queue before workers start competing for it.
-    const reclaimed = queue.reclaimStale()
+    const reclaimed = withDefaultTenant(() => queue.reclaimStale())
     if (reclaimed > 0) {
       console.log(`[pool] reclaimed ${reclaimed} stale job(s) from a previous run`)
     }
@@ -117,7 +132,7 @@ class WorkerPool {
     // Safety net for a worker that dies without reporting.
     this.sweeper = setInterval(() => {
       try {
-        queue.reclaimStale()
+        withDefaultTenant(() => queue.reclaimStale())
       } catch {
         // Transient lock contention; the next sweep covers it.
       }
@@ -275,7 +290,7 @@ class WorkerPool {
 
   private refreshBatch(batchId: string): void {
     try {
-      batches.refresh(batchId)
+      withDefaultTenant(() => batches.refresh(batchId))
     } catch (err) {
       console.warn(`[pool] batch refresh failed for ${batchId}:`, (err as Error).message)
     }

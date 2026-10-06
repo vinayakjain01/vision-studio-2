@@ -1,5 +1,34 @@
+/**
+ * Ops utility: cancel every pending/claimed/running job for one tenant and
+ * reset any image stuck mid-analysis back to pending.
+ *
+ *   node scripts/clear-queue.js [tenantId]
+ *
+ * Defaults to the single tenant legacy migration creates when none is
+ * given. Previously hardcoded `data/vision-studio.db` — the pre-tenancy
+ * path, which no longer exists after `npm run tenants:migrate-legacy`.
+ */
+const path = require('path')
 const Database = require('better-sqlite3')
-const db = new Database('data/vision-studio.db')
+
+function resolveTenantId(argTenantId) {
+  if (argTenantId) return argTenantId
+  const controlDb = new Database(path.join('data', 'control.db'), { readonly: true })
+  const rows = controlDb.prepare('SELECT id, name FROM tenants').all()
+  controlDb.close()
+  if (rows.length === 0) throw new Error('no tenants exist — run `npm run tenants:migrate-legacy` first')
+  if (rows.length > 1) {
+    throw new Error(
+      `${rows.length} tenants exist; pass one explicitly: node scripts/clear-queue.js <tenantId>\n` +
+        rows.map(r => `  ${r.id}  (${r.name})`).join('\n')
+    )
+  }
+  return rows[0].id
+}
+
+const tenantId = resolveTenantId(process.argv[2])
+const dbPath = path.join('data', 'tenants', tenantId, 'app.db')
+const db = new Database(dbPath)
 const now = new Date().toISOString()
 
 const tx = db.transaction(() => {
@@ -19,7 +48,9 @@ const tx = db.transaction(() => {
     WHERE status IN ('queued', 'running')
   `).run(now)
 
-  console.log(`Cancelled ${jobs.changes} jobs, reset ${imgs.changes} images, cancelled ${batches.changes} batches`)
+  console.log(
+    `[${tenantId}] cancelled ${jobs.changes} jobs, reset ${imgs.changes} images, cancelled ${batches.changes} batches`
+  )
 })
 tx()
 db.close()

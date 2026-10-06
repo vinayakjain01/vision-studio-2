@@ -10,7 +10,7 @@ import { NextRequest } from 'next/server'
 import { products, images, creatives, templates } from '@/db/repositories'
 import { getUsableAnalysis, getVisionAssetUrls } from '@/services/vision-service'
 import { mediaUrl } from '@/storage/media-store'
-import { handler, ok, notFound } from '@/lib/api'
+import { handler, ok, notFound } from '@/lib/api-handler'
 import type { VisionMetadata } from '@/vision/types'
 
 export const dynamic = 'force-dynamic'

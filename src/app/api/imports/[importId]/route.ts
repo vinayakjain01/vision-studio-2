@@ -6,7 +6,7 @@ import { NextRequest } from 'next/server'
 import { imports, images } from '@/db/repositories'
 import { finalizeImport, reanalyzeImport } from '@/import/import-service'
 import { deleteImport } from '@/services/cleanup-service'
-import { handler, ok, notFound, badRequest } from '@/lib/api'
+import { handler, ok, notFound, badRequest } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 

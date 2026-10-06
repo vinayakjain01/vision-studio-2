@@ -8,13 +8,26 @@
 import Link from 'next/link'
 import { ArrowRight, FolderUp, LayoutTemplate, Route, Wand2 } from 'lucide-react'
 import { images, products, templates, rules, batches, creatives, visionAnalyses } from '@/db/repositories'
+import { withTenant } from '@/tenancy/page-context'
 import { PageHeader, PageBody } from '@/components/shell/page-header'
 import { Panel, PanelHeader, Stat, Badge, EmptyState, Progress } from '@/components/ui/primitives'
 import { humanize, timeAgo } from '@/lib/utils'
 
 export const dynamic = 'force-dynamic'
 
-export default function OverviewPage() {
+export default async function OverviewPage() {
+  // Calls `OverviewContent()` directly, as a plain function, rather than
+  // returning `<OverviewContent />` as a deferred element — the latter would
+  // only invoke it once React gets around to rendering it, which happens
+  // AFTER this callback already returned and `TenantContext` has unwound.
+  // See the module doc on `src/tenancy/context.ts` for why that distinction
+  // matters here specifically, and the other pages using `withTenant()` for
+  // the pattern that avoids it (calling their data functions directly in
+  // the same expression, never through a separately-invoked component).
+  return withTenant(() => OverviewContent())
+}
+
+function OverviewContent() {
   const imageCounts = images.statusCounts()
   const totalImages = images.total()
   const productCount = products.count()

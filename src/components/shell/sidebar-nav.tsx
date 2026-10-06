@@ -1,12 +1,13 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { useRouter, usePathname } from 'next/navigation'
 import {
   Aperture,
   FolderUp,
   Images,
   LayoutTemplate,
+  LogOut,
   Route,
   Sparkles,
   Wand2,
@@ -44,6 +45,13 @@ const GROUPS: {
 
 export function AppNav() {
   const pathname = usePathname()
+  const router = useRouter()
+
+  const logout = async () => {
+    await fetch('/api/auth/logout', { method: 'POST' })
+    router.push('/login')
+    router.refresh()
+  }
 
   return (
     <nav className="sticky top-0 flex h-screen w-52 shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-surface)]">
@@ -91,8 +99,16 @@ export function AppNav() {
         ))}
       </div>
 
-      <div className="border-t border-[var(--color-border)] p-3">
+      <div className="space-y-2 border-t border-[var(--color-border)] p-3">
         <EngineStatusPill />
+        <button
+          type="button"
+          onClick={logout}
+          className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] text-[var(--color-ink-muted)] transition-colors hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-ink)]"
+        >
+          <LogOut size={15} strokeWidth={1.8} />
+          Sign out
+        </button>
       </div>
     </nav>
   )

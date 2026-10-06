@@ -9,7 +9,7 @@
 
 import { NextRequest } from 'next/server'
 import { rules, templates } from '@/db/repositories'
-import { handler, ok, badRequest, notFound } from '@/lib/api'
+import { handler, ok, badRequest, notFound } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 

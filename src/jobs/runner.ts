@@ -15,47 +15,58 @@
 import { getPool } from './pool'
 import * as queue from './queue'
 import { closeDb } from '@/db/client'
-import { config } from '@/config'
+import { config, tenantPaths } from '@/config'
+import { runWithTenant } from '@/tenancy/context'
+import { resolveDefaultTenantId } from './default-tenant'
 
 async function main() {
+  // Same P1 bridge as worker-entry.ts — see src/jobs/default-tenant.ts.
+  const tenantId = resolveDefaultTenantId()
+
   console.log('Vision Studio — worker')
-  console.log(`  database    ${config.paths.database}`)
+  console.log(`  tenant      ${tenantId}`)
+  console.log(`  database    ${tenantPaths(tenantId).database}`)
   console.log(`  models      ${config.paths.modelDir}`)
   console.log(`  vision slots ${config.jobs.visionConcurrency}`)
   console.log(`  render slots ${config.jobs.renderConcurrency}`)
 
-  const pool = getPool()
-  pool.start()
+  // Same reasoning as worker-entry.ts: this process's own `queue.stats()`
+  // calls below need a tenant context too, not just the child workers
+  // `pool.start()` spawns (each of which binds its own, independently).
+  await runWithTenant({ tenantId, userId: 'system', role: 'owner' }, async () => {
+    const pool = getPool()
+    pool.start()
 
-  const report = setInterval(() => {
-    const vision = queue.stats('vision')
-    const render = queue.stats('render')
-    const status = pool.status()
-    const busy = status.workers.filter(w => w.state === 'busy').length
+    const report = setInterval(() => {
+      const vision = queue.stats('vision')
+      const render = queue.stats('render')
+      const status = pool.status()
+      const busy = status.workers.filter(w => w.state === 'busy').length
 
-    if (vision.pending + vision.running + render.pending + render.running === 0) return
+      if (vision.pending + vision.running + render.pending + render.running === 0) return
 
-    console.log(
-      `  vision p=${vision.pending} r=${vision.running} f=${vision.failed} | ` +
-      `render p=${render.pending} r=${render.running} f=${render.failed} | ` +
-      `workers ${busy}/${status.workers.length} busy`
-    )
-  }, 5000)
+      console.log(
+        `  vision p=${vision.pending} r=${vision.running} f=${vision.failed} | ` +
+        `render p=${render.pending} r=${render.running} f=${render.failed} | ` +
+        `workers ${busy}/${status.workers.length} busy`
+      )
+    }, 5000)
 
-  const shutdown = async (signal: string) => {
-    console.log(`\n${signal} — draining`)
-    clearInterval(report)
-    await pool.stop()
-    closeDb()
-    process.exit(0)
-  }
+    const shutdown = async (signal: string) => {
+      console.log(`\n${signal} — draining`)
+      clearInterval(report)
+      await pool.stop()
+      closeDb()
+      process.exit(0)
+    }
 
-  process.on('SIGINT', () => void shutdown('SIGINT'))
-  process.on('SIGTERM', () => void shutdown('SIGTERM'))
+    process.on('SIGINT', () => void shutdown('SIGINT'))
+    process.on('SIGTERM', () => void shutdown('SIGTERM'))
 
-  // Hold the process open; the pool's threads are unref'd so they would not
-  // keep it alive on their own.
-  await new Promise(() => {})
+    // Hold the process open; the pool's threads are unref'd so they would not
+    // keep it alive on their own.
+    await new Promise(() => {})
+  })
 }
 
 main().catch(err => {

@@ -14,7 +14,7 @@
  */
 
 import { config } from '@/config'
-import { handler, ok } from '@/lib/api'
+import { handler, ok } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 

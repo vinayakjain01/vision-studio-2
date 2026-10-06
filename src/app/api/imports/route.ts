@@ -11,7 +11,7 @@ import { NextRequest } from 'next/server'
 import { imports } from '@/db/repositories'
 import { createImport } from '@/import/import-service'
 import { ensurePoolRunning } from '@/jobs/pool'
-import { handler, ok, badRequest } from '@/lib/api'
+import { handler, ok, badRequest } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 

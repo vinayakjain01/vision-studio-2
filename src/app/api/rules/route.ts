@@ -10,7 +10,7 @@
 import { NextRequest } from 'next/server'
 import { rules, templates } from '@/db/repositories'
 import { sortRules, specificity } from '@/rules/resolver'
-import { handler, ok, badRequest } from '@/lib/api'
+import { handler, ok, badRequest } from '@/lib/api-handler'
 import type { RuleMatchType, RuleOperator } from '@/db/types'
 
 export const dynamic = 'force-dynamic'

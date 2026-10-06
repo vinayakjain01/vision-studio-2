@@ -26,15 +26,28 @@ import fs from 'fs'
 import fsp from 'fs/promises'
 import path from 'path'
 import crypto from 'crypto'
-import { config } from '@/config'
+import { tenantPaths } from '@/config'
+import { currentTenant } from '@/tenancy/context'
 
 export type MediaRoot = 'originals' | 'derived' | 'creatives' | 'assets'
 
-const ROOTS: Record<MediaRoot, string> = {
-  originals: config.paths.originals,
-  derived: config.paths.derived,
-  creatives: config.paths.creatives,
-  assets: config.paths.assets,
+/**
+ * Resolved fresh on every call from `currentTenant()`, not cached at module
+ * load — the single biggest change this file makes for multi-tenancy. It
+ * used to be a module-level constant computed once from one global
+ * `dataDir`; a photo's root now depends on who's asking, which can only be
+ * known per-call. `currentTenant()` itself throws with no context set, so
+ * this inherits that fail-closed behaviour rather than needing its own
+ * check.
+ */
+function roots(): Record<MediaRoot, string> {
+  const paths = tenantPaths(currentTenant().tenantId)
+  return {
+    originals: paths.originals,
+    derived: paths.derived,
+    creatives: paths.creatives,
+    assets: paths.assets,
+  }
 }
 
 /** sha256 of a buffer, lowercase hex. */
@@ -73,7 +86,7 @@ function assertSafeKey(key: string): void {
 /** Absolute filesystem path for a key under a root. Validates the key. */
 export function resolvePath(root: MediaRoot, key: string): string {
   assertSafeKey(key)
-  const base = ROOTS[root]
+  const base = roots()[root]
   const resolved = path.resolve(base, key)
   // Defence in depth: even with the checks above, confirm containment.
   const rel = path.relative(base, resolved)
@@ -225,7 +238,7 @@ export async function deleteDirectory(root: MediaRoot, key: string): Promise<voi
  * while leaving the bytes on disk.
  */
 export async function listMediaKeys(root: MediaRoot): Promise<string[]> {
-  const base = ROOTS[root]
+  const base = roots()[root]
   const out: string[] = []
 
   async function walk(dir: string): Promise<void> {
@@ -251,7 +264,7 @@ export async function listMediaKeys(root: MediaRoot): Promise<string[]> {
 
 /** Delete directories that no longer contain any files. */
 export async function pruneEmptyDirectories(root: MediaRoot): Promise<number> {
-  const base = ROOTS[root]
+  const base = roots()[root]
   let removed = 0
 
   async function walk(dir: string): Promise<boolean> {
@@ -295,6 +308,15 @@ export function mediaUrl(root: MediaRoot, key: string): string {
   return `/api/media/${root}/${encoded}`
 }
 
-export function ensureMediaRoots(): void {
-  for (const dir of Object.values(ROOTS)) fs.mkdirSync(dir, { recursive: true })
+/**
+ * Creates every media directory for one tenant. Takes the tenant id
+ * explicitly rather than reading `currentTenant()` — this runs during
+ * provisioning (tenant creation, legacy migration), before any request for
+ * that tenant exists to derive a context from.
+ */
+export function ensureMediaRoots(tenantId: string): void {
+  const paths = tenantPaths(tenantId)
+  for (const dir of [paths.originals, paths.derived, paths.creatives, paths.assets, paths.tmp]) {
+    fs.mkdirSync(dir, { recursive: true })
+  }
 }

@@ -42,6 +42,47 @@ const dataDir = resolveFromRoot(process.env.VISION_STUDIO_DATA_DIR || './data')
 const modelDir = resolveFromRoot(process.env.VISION_STUDIO_MODEL_DIR || './models')
 
 /**
+ * A tenant ID used in a filesystem path has to be validated as strictly as
+ * any other path segment, independent of `media-store.ts`'s own key
+ * validation — this one guards the ROOT, not a key under it. IDs minted by
+ * `newId()` (`<prefix>_<nanoid>`) always match this; anything that doesn't
+ * is either a bug or an attempt to escape the tenant root, and either way
+ * must not be trusted as a path component.
+ */
+const TENANT_ID_PATTERN = /^[A-Za-z0-9_-]+$/
+
+export function assertValidTenantId(tenantId: string): void {
+  if (!TENANT_ID_PATTERN.test(tenantId)) {
+    throw new Error(`invalid tenant id: ${JSON.stringify(tenantId)}`)
+  }
+}
+
+/**
+ * Per-tenant paths, computed on demand rather than frozen at module load —
+ * the single biggest structural change this file makes for multi-tenancy.
+ * Every caller that used to read `config.paths.database` /
+ * `config.paths.originals` etc. now calls `tenantPaths(tenantId)` instead,
+ * with the tenant id coming from `currentTenant()` (request/page code) or
+ * passed explicitly (scripts, migration, workers — see their own files for
+ * why each of those can't use `currentTenant()`).
+ */
+export function tenantPaths(tenantId: string) {
+  assertValidTenantId(tenantId)
+  const root = path.join(dataDir, 'tenants', tenantId)
+  return {
+    root,
+    database: path.join(root, 'app.db'),
+    originals: path.join(root, 'media', 'originals'),
+    derived: path.join(root, 'media', 'derived'),
+    creatives: path.join(root, 'media', 'creatives'),
+    assets: path.join(root, 'media', 'assets'),
+    tmp: path.join(root, 'tmp'),
+  }
+}
+
+export type TenantPaths = ReturnType<typeof tenantPaths>
+
+/**
  * Default worker counts.
  *
  * One vision worker, one render worker, one ORT thread each. Full stop — not a
@@ -101,16 +142,16 @@ const defaults = defaultConcurrency()
 export const config = {
   paths: {
     dataDir,
-    /** SQLite database file. */
-    database: path.join(dataDir, 'vision-studio.db'),
-    /** Immutable, content-addressed source images. Never modified after write. */
-    originals: path.join(dataDir, 'media', 'originals'),
-    /** Vision-engine outputs keyed by source hash: masks, cutouts, previews. */
-    derived: path.join(dataDir, 'media', 'derived'),
-    /** Rendered creatives, grouped by generation batch. */
-    creatives: path.join(dataDir, 'media', 'creatives'),
-    /** Template thumbnails and user-uploaded template assets (logos, overlays). */
-    assets: path.join(dataDir, 'media', 'assets'),
+    /**
+     * Control-plane database: users, tenants, memberships, sessions, quotas,
+     * usage, audit log. One file, shared by every tenant — never business
+     * data. See `src/db/control-schema.sql`.
+     */
+    controlDatabase: path.join(dataDir, 'control.db'),
+    /**
+     * ONNX model weights. Global and read-only, not tenant data — every
+     * tenant's vision analysis runs through the same shared model files.
+     */
     modelDir,
   },
 
@@ -187,6 +228,36 @@ export const config = {
      * than producing that silently.
      */
     maxUploadDim: int(process.env.CLOUDINARY_MAX_UPLOAD_DIM, 4096),
+  },
+
+  auth: {
+    /**
+     * No open signup by default — an admin creates every account. Set to
+     * `true` only for a deployment that genuinely wants self-service
+     * registration; the login/account UI checks this before offering a
+     * signup path at all, not just before accepting one.
+     */
+    allowSignup: (process.env.ALLOW_SIGNUP ?? 'false').toLowerCase() === 'true',
+    /** Bootstraps the first platform_admin + tenant — see `scripts/tenants-migrate-legacy.ts`. */
+    adminEmail: process.env.ADMIN_EMAIL ?? '',
+    adminPassword: process.env.ADMIN_PASSWORD ?? '',
+    sessionCookieName: 'vs_session',
+    /**
+     * Defaults to true (a session cookie marked `Secure` is simply not sent
+     * over plain HTTP, which is correct). Explicitly `false` only matters
+     * for a deployment with no TLS yet — set `COOKIE_SECURE=false` there
+     * deliberately, understanding the session token then travels in
+     * cleartext, rather than this app silently guessing a weaker default
+     * for a plain-HTTP deployment. The real fix for that deployment is
+     * terminating TLS at the reverse proxy, not this flag — see
+     * docs/DEPLOY.md.
+     */
+    cookieSecure: (process.env.COOKIE_SECURE ?? 'true').toLowerCase() !== 'false',
+    /** Sliding expiry: refreshed on use, up to this long since last use. */
+    sessionTtlMs: int(process.env.SESSION_TTL_MS, 30 * 24 * 60 * 60 * 1000),
+    /** Failed attempts allowed in the window below before backing off. */
+    loginMaxAttempts: int(process.env.LOGIN_MAX_ATTEMPTS, 10),
+    loginWindowMs: int(process.env.LOGIN_WINDOW_MS, 15 * 60 * 1000),
   },
 } as const
 

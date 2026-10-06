@@ -11,7 +11,7 @@ import { NextRequest } from 'next/server'
 import { ingestFiles, type IncomingFile } from '@/import/import-service'
 import { imports } from '@/db/repositories'
 import { MAX_REQUEST_BYTES, baseName, normalizePath } from '@/import/file-rules'
-import { handler, ok, badRequest, notFound } from '@/lib/api'
+import { handler, ok, badRequest, notFound } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 // Uploading a batch of full-resolution studio files takes longer than the

@@ -7,7 +7,7 @@ import { templates } from '@/db/repositories'
 import { createDefaultTemplate, type AspectRatioId } from '@/templates/types'
 import { clonePreset } from '@/framing/types'
 import { mediaUrl } from '@/storage/media-store'
-import { handler, ok, badRequest } from '@/lib/api'
+import { handler, ok, badRequest } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 

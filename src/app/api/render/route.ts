@@ -22,7 +22,7 @@ import { renderOnce } from '@/services/generation-service'
 import { getUsableAnalysis } from '@/services/vision-service'
 import { readMedia, mediaUrl } from '@/storage/media-store'
 import { products } from '@/db/repositories'
-import { handler, ok, badRequest, notFound } from '@/lib/api'
+import { handler, ok, badRequest, notFound } from '@/lib/api-handler'
 import type { TemplateDocument } from '@/templates/types'
 
 export const dynamic = 'force-dynamic'

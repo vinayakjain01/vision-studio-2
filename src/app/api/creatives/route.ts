@@ -5,7 +5,7 @@
 import { NextRequest } from 'next/server'
 import { creatives, products, templates } from '@/db/repositories'
 import { mediaUrl } from '@/storage/media-store'
-import { handler, ok } from '@/lib/api'
+import { handler, ok } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 

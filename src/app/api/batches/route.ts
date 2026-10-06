@@ -3,7 +3,7 @@
  */
 
 import { batches } from '@/db/repositories'
-import { handler, ok } from '@/lib/api'
+import { handler, ok } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 

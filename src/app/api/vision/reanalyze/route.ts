@@ -12,7 +12,7 @@ import { reanalyzeAllPending, reanalyzeImport } from '@/import/import-service'
 import { images } from '@/db/repositories'
 import { enqueue } from '@/jobs/queue'
 import { ensurePoolRunning } from '@/jobs/pool'
-import { handler, ok, notFound } from '@/lib/api'
+import { handler, ok, notFound } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 

@@ -10,7 +10,7 @@
 
 import { NextRequest } from 'next/server'
 import { deleteProduct } from '@/services/cleanup-service'
-import { handler, ok, notFound } from '@/lib/api'
+import { handler, ok, notFound } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 120

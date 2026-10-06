@@ -10,7 +10,7 @@ import { NextRequest } from 'next/server'
 import { getBatchProgress, cancelBatch, retryBatchFailures } from '@/services/generation-service'
 import { creatives } from '@/db/repositories'
 import { mediaUrl } from '@/storage/media-store'
-import { handler, ok, badRequest, notFound } from '@/lib/api'
+import { handler, ok, badRequest, notFound } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 
