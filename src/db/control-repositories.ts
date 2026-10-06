@@ -10,6 +10,7 @@
  */
 
 import { nanoid } from 'nanoid'
+import { config } from '@/config'
 import { getControlDb, nowIso, transactionOn, bool, type Db } from './client'
 
 export function newId(prefix: string): string {
@@ -110,8 +111,35 @@ function toTenant(row: any): TenantRecord {
 }
 
 export const tenants = {
-  /** Creates the tenant AND its default quota row in one transaction — a tenant with no quota row is a bug waiting to happen once P3 starts enforcing them. */
+  /**
+   * Creates the tenant AND its default quota row in one transaction — a
+   * tenant with no quota row is a bug waiting to happen once P3 starts
+   * enforcing them.
+   *
+   * Refuses to create a SECOND tenant unless `ALLOW_MULTI_TENANT_PREVIEW=1`
+   * is set. The worker pool and job queue are still single-tenant until P3
+   * (see docs/MULTI_TENANCY.md §3.3) — bound at startup to whichever one
+   * tenant `resolveDefaultTenantId()` finds, and it refuses to run at all
+   * once a second exists. Letting a second tenant get created here anyway
+   * would silently run every tenant's jobs against the first one's data
+   * instead, which is a correctness bug, not a missing feature. This is
+   * the one place that guarantee can be enforced regardless of which
+   * script or route ends up calling it.
+   */
   create(name: string, db: Db = getControlDb()): TenantRecord {
+    if (!config.auth.allowMultiTenantPreview) {
+      const existing = db.prepare('SELECT COUNT(*) AS c FROM tenants').get() as { c: number }
+      if (existing.c > 0) {
+        throw new Error(
+          'Refusing to create a second tenant: the worker pool and job queue are still ' +
+            'single-tenant until P3 (see docs/MULTI_TENANCY.md §3.3) and would run every ' +
+            "tenant's jobs against whichever one resolveDefaultTenantId() picks. Set " +
+            'ALLOW_MULTI_TENANT_PREVIEW=1 only if you understand this is a data/auth-layer ' +
+            'preview, not a supported multi-tenant deployment.'
+        )
+      }
+    }
+
     return transactionOn(db, conn => {
       const id = newId('tnt')
       const now = nowIso()

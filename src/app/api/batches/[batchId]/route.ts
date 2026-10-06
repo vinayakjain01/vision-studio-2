@@ -8,7 +8,7 @@
 
 import { NextRequest } from 'next/server'
 import { getBatchProgress, cancelBatch, retryBatchFailures } from '@/services/generation-service'
-import { creatives } from '@/db/repositories'
+import { creatives, batches } from '@/db/repositories'
 import { mediaUrl } from '@/storage/media-store'
 import { handler, ok, badRequest, notFound } from '@/lib/api-handler'
 
@@ -47,6 +47,8 @@ export const GET = handler(
 export const PATCH = handler(
   async (request: NextRequest, context: { params: Promise<{ batchId: string }> }) => {
     const { batchId } = await context.params
+    if (!batches.get(batchId)) return notFound('batch not found')
+
     const body = await request.json().catch(() => ({}))
 
     switch (body?.action) {

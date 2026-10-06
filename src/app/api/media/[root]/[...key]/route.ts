@@ -13,6 +13,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import { statMedia, readMedia, type MediaRoot } from '@/storage/media-store'
 import { handler, badRequest, notFound } from '@/lib/api-handler'
 
+// Was the one route in the app missing this. The HTTP Cache-Control headers
+// below already say `private` (no shared/CDN caching), but that's a
+// downstream-cache instruction, not a guarantee Next.js itself won't
+// statically optimize or cache this route's OWN output at the framework
+// level — `force-dynamic` is what rules that out, same as every other
+// route here, and this is the one route actually serving tenant-scoped
+// bytes rather than JSON.
+export const dynamic = 'force-dynamic'
+
 const ROOTS: MediaRoot[] = ['originals', 'derived', 'creatives', 'assets']
 
 const CONTENT_TYPES: Record<string, string> = {

@@ -8,8 +8,9 @@
     "dev": "next dev --webpack",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint",
+    "lint": "tsx scripts/check-tenancy-boundaries.ts && eslint",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:reset": "tsx scripts/migrate.ts --reset",
     "tenants:migrate-legacy": "tsx scripts/tenants-migrate-legacy.ts",
@@ -21,7 +22,7 @@
   "dependencies": {
     "@napi-rs/canvas": "^1.0.3",
     "argon2": "^0.45.1",
-    "better-sqlite3": "^13.0.2",
+    "better-sqlite3": "12.2.0",
     "cloudinary": "^2.10.0",
     "clsx": "^2.1.1",
     "jszip": "^3.10.1",
@@ -46,7 +47,8 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.12",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.7"
   },
   "engines": {
     "node": ">=20.11"

@@ -107,7 +107,26 @@ function openTenantDb(tenantId: string): Db {
  * Same LRU as `getDb()` — both read and write the same `tenantHandles()`
  * map, so a tenant opened one way is reused the other.
  */
+type TenantDbOpenListener = (tenantId: string) => void
+let tenantDbOpenListeners: TenantDbOpenListener[] = []
+
+/**
+ * Test-only hook: registers a callback fired with the tenant ID every time
+ * `openTenantDbById` is asked for a handle (cache hit or miss). Lets the
+ * isolation test suite prove a given request/session only ever touches its
+ * own tenant's database file, instead of relying on code review alone to
+ * believe it. Not used by application code. Returns an unsubscribe function.
+ */
+export function __onTenantDbOpen(listener: TenantDbOpenListener): () => void {
+  tenantDbOpenListeners.push(listener)
+  return () => {
+    tenantDbOpenListeners = tenantDbOpenListeners.filter(l => l !== listener)
+  }
+}
+
 export function openTenantDbById(tenantId: string): Db {
+  for (const listener of tenantDbOpenListeners) listener(tenantId)
+
   const handles = tenantHandles()
   const existing = handles.get(tenantId)
   if (existing) {

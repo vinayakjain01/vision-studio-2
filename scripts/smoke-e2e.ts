@@ -35,13 +35,50 @@ function step(label: string): void {
   console.log(`\n── ${label} ${'─'.repeat(Math.max(0, 60 - label.length))}`)
 }
 
+// Set by `login()` below before any other request — every route except
+// /api/auth/login and /api/health requires a session now (see P1's auth
+// layer), which this script predates. Carried as a plain `Cookie` header
+// rather than anything fetch's own cookie jar would do automatically,
+// since Node's `fetch` has no cookie jar across calls by default.
+let sessionCookie = ''
+
 async function api<T>(pathname: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${baseUrl}${pathname}`, init)
+  const headers = new Headers(init?.headers)
+  if (sessionCookie) headers.set('cookie', sessionCookie)
+  const response = await fetch(`${baseUrl}${pathname}`, { ...init, headers })
   if (!response.ok) {
     const body = await response.text()
     throw new Error(`${init?.method ?? 'GET'} ${pathname} → ${response.status}: ${body.slice(0, 300)}`)
   }
   return response.json() as Promise<T>
+}
+
+/**
+ * Logs in and captures the session cookie for every subsequent `api()` call.
+ * Credentials come from the same env vars the legacy-migration bootstrap
+ * uses (`ADMIN_EMAIL`/`ADMIN_PASSWORD`) — run this against a server whose
+ * data dir was set up via `npm run tenants:migrate-legacy` with those same
+ * values.
+ */
+async function login(): Promise<void> {
+  const email = process.env.ADMIN_EMAIL
+  const password = process.env.ADMIN_PASSWORD
+  if (!email || !password) {
+    console.error('set ADMIN_EMAIL and ADMIN_PASSWORD (the account created by tenants:migrate-legacy)')
+    process.exit(1)
+  }
+
+  const response = await fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  })
+  if (!response.ok) {
+    throw new Error(`login failed: ${response.status} ${await response.text()}`)
+  }
+  const setCookie = response.headers.get('set-cookie')
+  if (!setCookie) throw new Error('login succeeded but no session cookie was set')
+  sessionCookie = setCookie.split(';')[0]
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
@@ -50,6 +87,10 @@ async function main() {
   console.log(`Vision Studio — end-to-end smoke test`)
   console.log(`  target  ${baseUrl}`)
   console.log(`  images  ${imageDir}`)
+
+  step('Sign in')
+  await login()
+  check('session established', !!sessionCookie)
 
   // ── Engine ────────────────────────────────────────────────────────────────
   step('Engine status')

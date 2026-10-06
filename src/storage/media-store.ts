@@ -83,16 +83,59 @@ function assertSafeKey(key: string): void {
   }
 }
 
-/** Absolute filesystem path for a key under a root. Validates the key. */
+/**
+ * Resolves symlinks for the containment check below. For a path that
+ * doesn't exist yet (the common case for a write), walks up to the nearest
+ * EXISTING ancestor, resolves that ancestor's real path, and reattaches the
+ * not-yet-created segments — so a brand-new file is still checked against
+ * where its parent directory actually lives on disk, symlinks and all, not
+ * just its literal textual path.
+ */
+function resolveRealContainment(p: string): string {
+  let current = p
+  const pending: string[] = []
+  while (true) {
+    if (fs.existsSync(current)) {
+      const real = fs.realpathSync(current)
+      return pending.length > 0 ? path.join(real, ...pending) : real
+    }
+    const parent = path.dirname(current)
+    if (parent === current) return p // hit the filesystem root with nothing existing — give up, caller still has the lexical check
+    pending.unshift(path.basename(current))
+    current = parent
+  }
+}
+
+/**
+ * Absolute filesystem path for a key under a root. Validates the key.
+ *
+ * Two independent containment checks, not one: the lexical check (`path
+ * .relative` on the literal, unresolved path) catches `../` segments and
+ * similar; the real-path check below catches the case the lexical one
+ * can't — a directory or file SOMEWHERE in the resolved path being a
+ * symlink that points outside the root, which `path.resolve`/`path.relative`
+ * have no way to see since they never touch the filesystem. Nothing in
+ * this app's own code creates symlinks inside a media root, but this is
+ * exactly the kind of check that should not depend on that staying true.
+ */
 export function resolvePath(root: MediaRoot, key: string): string {
   assertSafeKey(key)
   const base = roots()[root]
+  fs.mkdirSync(base, { recursive: true })
+
   const resolved = path.resolve(base, key)
-  // Defence in depth: even with the checks above, confirm containment.
   const rel = path.relative(base, resolved)
   if (rel.startsWith('..') || path.isAbsolute(rel)) {
     throw new Error(`storage key escapes root: ${JSON.stringify(key)}`)
   }
+
+  const realBase = fs.realpathSync(base)
+  const realResolved = resolveRealContainment(resolved)
+  const realRel = path.relative(realBase, realResolved)
+  if (realRel.startsWith('..') || path.isAbsolute(realRel)) {
+    throw new Error(`storage key escapes root via a symlink: ${JSON.stringify(key)}`)
+  }
+
   return resolved
 }
 

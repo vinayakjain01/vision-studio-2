@@ -243,21 +243,60 @@ export const config = {
     adminPassword: process.env.ADMIN_PASSWORD ?? '',
     sessionCookieName: 'vs_session',
     /**
-     * Defaults to true (a session cookie marked `Secure` is simply not sent
-     * over plain HTTP, which is correct). Explicitly `false` only matters
-     * for a deployment with no TLS yet — set `COOKIE_SECURE=false` there
-     * deliberately, understanding the session token then travels in
-     * cleartext, rather than this app silently guessing a weaker default
-     * for a plain-HTTP deployment. The real fix for that deployment is
-     * terminating TLS at the reverse proxy, not this flag — see
-     * docs/DEPLOY.md.
+     * `Secure` defaults to whether this process thinks it's in production
+     * (`NODE_ENV`), not hardcoded true — a hardcoded default broke `npm run
+     * dev` over `http://localhost` for anyone whose browser actually
+     * enforces the flag (curl doesn't, which is why this looked fine in
+     * earlier testing). Override explicitly with `COOKIE_SECURE` either
+     * direction: `=false` to deliberately run a production deployment
+     * without TLS yet (the session token then travels in cleartext — the
+     * real fix is terminating TLS at the reverse proxy, see docs/DEPLOY.md,
+     * not this flag), or `=true` to test the production cookie behaviour
+     * from a dev build.
      */
-    cookieSecure: (process.env.COOKIE_SECURE ?? 'true').toLowerCase() !== 'false',
+    cookieSecure:
+      process.env.COOKIE_SECURE != null
+        ? process.env.COOKIE_SECURE.toLowerCase() === 'true'
+        : process.env.NODE_ENV === 'production',
     /** Sliding expiry: refreshed on use, up to this long since last use. */
     sessionTtlMs: int(process.env.SESSION_TTL_MS, 30 * 24 * 60 * 60 * 1000),
     /** Failed attempts allowed in the window below before backing off. */
     loginMaxAttempts: int(process.env.LOGIN_MAX_ATTEMPTS, 10),
     loginWindowMs: int(process.env.LOGIN_WINDOW_MS, 15 * 60 * 1000),
+    /**
+     * Off by default — a client-supplied `X-Forwarded-For` is otherwise a
+     * free way to pick your own rate-limit bucket (or someone else's).
+     * Turn on only behind a reverse proxy you control that OVERWRITES this
+     * header rather than appending to whatever the client sent (Caddy's
+     * default `reverse_proxy` behaviour does this correctly). With it off,
+     * every request is rate-limited as one shared "unknown" IP bucket —
+     * safe (if coarse) rather than trusting a header that might be forged.
+     */
+    trustProxy: (process.env.TRUST_PROXY ?? 'false').toLowerCase() === 'true',
+    /**
+     * The app's own public origin (e.g. `https://vision.example.com`),
+     * used by the mutating-request Origin check instead of
+     * `request.nextUrl.host`. Required in production: behind a reverse
+     * proxy, Next.js's own view of its host is the internal
+     * address/port it's bound to (`127.0.0.1:3000`), not the public
+     * domain the browser's `Origin` header actually names, so comparing
+     * against `nextUrl.host` there rejects every legitimate same-origin
+     * request. Left unset in development, where `nextUrl.host` (just
+     * `localhost:3000`, no proxy in front) is already correct.
+     */
+    appOrigin: process.env.APP_ORIGIN || '',
+    /**
+     * A second (or third, ...) tenant cannot be served correctly yet — the
+     * worker pool and job queue are still single-tenant until P3 (see
+     * docs/MULTI_TENANCY.md §3.3). Creating one anyway would silently run
+     * every tenant's analysis/render jobs against whichever ONE tenant
+     * `resolveDefaultTenantId()` happens to pick, which is a correctness
+     * bug, not a missing feature — so tenant creation refuses outright
+     * unless this is explicitly set, which is a deliberate "I understand
+     * this is a preview of the data/auth layer only" opt-in for
+     * development, not a supported multi-tenant deployment mode.
+     */
+    allowMultiTenantPreview: (process.env.ALLOW_MULTI_TENANT_PREVIEW ?? '') === '1',
   },
 } as const
 

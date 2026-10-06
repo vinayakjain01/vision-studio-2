@@ -7,18 +7,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { config } from '@/config'
 import { attemptLogin } from '@/auth/login'
+import { clientIp } from '@/auth/client-ip'
 import { auditLog } from '@/db/control-repositories'
 import { handler, badRequest } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
-
-function clientIp(request: NextRequest): string {
-  // Behind the app's own nginx (see docs/DEPLOY.md), which sets this.
-  // Falls back to a constant rather than nothing, so the rate limiter
-  // degrades to "one shared bucket" instead of silently not limiting at
-  // all when the header is absent (e.g. hitting the app directly in dev).
-  return request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
-}
 
 export const POST = handler(
   async (request: NextRequest) => {

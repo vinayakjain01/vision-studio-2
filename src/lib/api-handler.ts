@@ -54,14 +54,32 @@ const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
  * missing Origin header is allowed through: some legitimate same-origin
  * requests and non-browser clients omit it, and the cookie's own
  * protections remain the primary defense either way.
+ *
+ * Compared against `config.auth.appOrigin` when set, NOT
+ * `request.nextUrl.host` — behind a reverse proxy, Next.js's own view of
+ * its host is the internal address it's bound to (`127.0.0.1:3000`), never
+ * the public domain a real browser's `Origin` header names, so comparing
+ * against it there would reject every legitimate same-origin request.
+ * `appOrigin` is required in production for exactly this reason; left
+ * unset in development, `nextUrl.host` is already correct (no proxy sits
+ * in front of `next dev`).
  */
 function originIsTrusted(request: NextRequest): boolean {
   const origin = request.headers.get('origin')
   if (!origin) return true
+
+  const trustedHost = config.auth.appOrigin
+    ? safeHost(config.auth.appOrigin)
+    : request.nextUrl.host
+
+  return safeHost(origin) === trustedHost
+}
+
+function safeHost(url: string): string | null {
   try {
-    return new URL(origin).host === request.nextUrl.host
+    return new URL(url).host
   } catch {
-    return false
+    return null
   }
 }
 
