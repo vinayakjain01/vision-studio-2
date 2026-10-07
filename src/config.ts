@@ -179,8 +179,78 @@ export const config = {
     /**
      * A job claimed but not updated for this long is presumed abandoned (worker
      * crash / process kill) and is returned to the queue on the next sweep.
+     * Also the default lease DURATION granted at claim time (lease_expires_at
+     * = claimed_at + this) — reclaimStale() compares against that expiry
+     * rather than recomputing "how long since the last heartbeat" itself.
      */
     staleClaimMs: int(process.env.JOB_STALE_CLAIM_MS, 5 * 60 * 1000),
+    /**
+     * A 'bulk' job pending longer than this is promoted to 'interactive' class
+     * so it can never starve behind a steady stream of fresh bulk work from
+     * other tenants (see promoteAgedBulkJobs() in src/jobs/queue.ts).
+     */
+    bulkMaxWaitSeconds: int(process.env.BULK_MAX_WAIT_SECONDS, 900),
+    /**
+     * Deletes completed/failed/cancelled job rows from control.db older than
+     * this. Safe: each batch's own summary counts are persisted onto its
+     * `batches` row (in the tenant's own app.db, never pruned) well before
+     * this window elapses — see `batches.refresh`/`applyProgress` and
+     * generation-service.ts's call sites, which run on every job completion,
+     * not just at prune time.
+     */
+    retentionDays: int(process.env.JOB_RETENTION_DAYS, 30),
+    /**
+     * Per-kind watchdog: a job whose 'running' status outlives this is
+     * presumed hung (not merely slow — `background_fill`'s own wait-for-
+     * dependency pattern never holds 'running' status while waiting, see
+     * BackgroundNotReadyError). The pool kills and respawns the worker
+     * holding it and counts a failed attempt — see WorkerPool's watchdog
+     * sweep in src/jobs/pool.ts. `background_fill` gets the remote API's own
+     * timeout plus a margin, since that call can legitimately run for most
+     * of CLOUDINARY_TIMEOUT_MS.
+     */
+    maxRuntimeMs: {
+      vision: int(process.env.JOB_MAX_RUNTIME_VISION_MS, 60_000),
+      render: int(process.env.JOB_MAX_RUNTIME_RENDER_MS, 90_000),
+      background_fill: int(
+        process.env.JOB_MAX_RUNTIME_BACKGROUND_FILL_MS,
+        int(process.env.CLOUDINARY_TIMEOUT_MS, 180_000) + 60_000
+      ),
+    } as Record<'vision' | 'render' | 'background_fill', number>,
+  },
+
+  aiExtendDispatcher: {
+    /**
+     * Circuit breaker for the whole shared Cloudinary account, independent of
+     * any one tenant's own `max_ai_extend_per_month` quota — every tenant
+     * could be individually within quota and the account still over budget
+     * in aggregate. A warning logs at 80% of this; the dispatcher refuses
+     * outright at 100%, surfaced as a parked (non-retryable) job failure,
+     * same as an exhausted per-tenant quota.
+     */
+    globalMonthlyCap: int(process.env.AI_EXTEND_GLOBAL_MONTHLY_CAP, 20_000),
+    /**
+     * Max simultaneous Cloudinary calls across every background_fill worker
+     * process — see ai_extend_global_state in control-schema.sql for why
+     * this can't be a plain in-process semaphore. Defaults to the same
+     * value as CLOUDINARY_JOB_CONCURRENCY (worker SLOT count), since that
+     * already bounds concurrency structurally in the common case; set this
+     * lower to leave headroom without reducing slot count, or higher if
+     * slots sometimes idle waiting on something other than the API call.
+     */
+    globalConcurrency: int(
+      process.env.AI_EXTEND_GLOBAL_CONCURRENCY,
+      int(process.env.CLOUDINARY_JOB_CONCURRENCY, 4)
+    ),
+    /** Token-bucket: refilled at this rate, capped at this burst size. */
+    rateLimitPerSecond: float(process.env.AI_EXTEND_RATE_LIMIT_PER_SECOND, 2),
+    rateLimitBurst: int(process.env.AI_EXTEND_RATE_LIMIT_BURST, 4),
+    /** Per-tenant concurrent Cloudinary calls — independent of the global cap above. */
+    perTenantConcurrency: int(process.env.AI_EXTEND_PER_TENANT_CONCURRENCY, 2),
+    /** Low on purpose — every retry can cost a paid generative credit. */
+    maxAttempts: int(process.env.AI_EXTEND_MAX_ATTEMPTS, 3),
+    baseBackoffMs: int(process.env.AI_EXTEND_BASE_BACKOFF_MS, 2_000),
+    maxBackoffMs: int(process.env.AI_EXTEND_MAX_BACKOFF_MS, 30_000),
   },
 
   render: {
@@ -286,15 +356,13 @@ export const config = {
      */
     appOrigin: process.env.APP_ORIGIN || '',
     /**
-     * A second (or third, ...) tenant cannot be served correctly yet — the
-     * worker pool and job queue are still single-tenant until P3 (see
-     * docs/MULTI_TENANCY.md §3.3). Creating one anyway would silently run
-     * every tenant's analysis/render jobs against whichever ONE tenant
-     * `resolveDefaultTenantId()` happens to pick, which is a correctness
-     * bug, not a missing feature — so tenant creation refuses outright
-     * unless this is explicitly set, which is a deliberate "I understand
-     * this is a preview of the data/auth layer only" opt-in for
-     * development, not a supported multi-tenant deployment mode.
+     * Gates creating a second (or third, ...) tenant. As of P3 this is no
+     * longer an architectural necessity — the worker pool binds tenant
+     * context per job and the scheduler fair-shares across tenants (see
+     * src/jobs/queue.ts's claim() and docs/MULTI_TENANCY.md §5) — it is a
+     * deliberate opt-in kept in place until multi-tenant operation is turned
+     * on on purpose, not as a side effect of running the legacy-migration
+     * script a second time.
      */
     allowMultiTenantPreview: (process.env.ALLOW_MULTI_TENANT_PREVIEW ?? '') === '1',
   },

@@ -11,6 +11,8 @@ import { NextRequest } from 'next/server'
 import { ingestFiles, type IncomingFile } from '@/import/import-service'
 import { imports } from '@/db/repositories'
 import { MAX_REQUEST_BYTES, baseName, normalizePath } from '@/import/file-rules'
+import { assertImagesPerBatch, assertStorageBudget, tryAcquireUploadSlot, releaseUploadSlot } from '@/jobs/quota'
+import { currentTenant } from '@/tenancy/context'
 import { handler, ok, badRequest, notFound } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
@@ -37,48 +39,75 @@ export const POST = handler(
       return badRequest('paths and files must have the same length')
     }
 
-    const incoming: IncomingFile[] = []
-    let totalBytes = 0
+    const tenantId = currentTenant().tenantId
+    // Checked against where this import's cumulative total would LAND, not
+    // just this one request's file count — "per batch" means the whole
+    // import session, and a client sending files in several smaller requests
+    // must not be able to exceed it that way.
+    assertImagesPerBatch(tenantId, record.importedFiles + entries.length)
 
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i]
-      if (!(entry instanceof File)) continue
+    // Concurrent-upload cap is enforced for the duration of this whole
+    // request (reading every file's bytes, then ingesting them) — the thing
+    // actually worth bounding is simultaneous in-flight upload WORK, not
+    // just the instant the request arrives.
+    if (!tryAcquireUploadSlot(tenantId)) {
+      return badRequest(
+        'This workspace already has the maximum number of uploads in progress — wait for one to finish.'
+      )
+    }
 
-      const bytes = Buffer.from(await entry.arrayBuffer())
-      totalBytes += bytes.byteLength
+    try {
+      const incoming: IncomingFile[] = []
+      let totalBytes = 0
 
-      if (totalBytes > MAX_REQUEST_BYTES) {
-        return badRequest(
-          `batch exceeds ${Math.round(MAX_REQUEST_BYTES / 1024 / 1024)} MB; send fewer files per request`
-        )
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i]
+        if (!(entry instanceof File)) continue
+
+        const bytes = Buffer.from(await entry.arrayBuffer())
+        totalBytes += bytes.byteLength
+
+        if (totalBytes > MAX_REQUEST_BYTES) {
+          return badRequest(
+            `batch exceeds ${Math.round(MAX_REQUEST_BYTES / 1024 / 1024)} MB; send fewer files per request`
+          )
+        }
+
+        // The `paths` field is authoritative for both the path AND the file name.
+        // A multipart part's own filename is optional and not always set — a
+        // client appending a Blob rather than a File sends the literal "blob",
+        // which would make every image fail extension classification. Deriving
+        // the name from the path we were explicitly given avoids depending on
+        // that, and falls back to the part name when no path was sent.
+        const relativePath = normalizePath(paths[i] || entry.name || `file-${i}`)
+        const fileName = baseName(relativePath) || entry.name || `file-${i}`
+
+        incoming.push({
+          relativePath,
+          fileName,
+          mimeType: entry.type || '',
+          bytes,
+        })
       }
 
-      // The `paths` field is authoritative for both the path AND the file name.
-      // A multipart part's own filename is optional and not always set — a
-      // client appending a Blob rather than a File sends the literal "blob",
-      // which would make every image fail extension classification. Deriving
-      // the name from the path we were explicitly given avoids depending on
-      // that, and falls back to the part name when no path was sent.
-      const relativePath = normalizePath(paths[i] || entry.name || `file-${i}`)
-      const fileName = baseName(relativePath) || entry.name || `file-${i}`
+      // Original bytes only — duplicates within this batch (same hash) are
+      // free, but that's determined deeper in `ingestFiles`; checking against
+      // the full read size here is deliberately the conservative (never
+      // under-counts) estimate.
+      assertStorageBudget(tenantId, totalBytes)
 
-      incoming.push({
-        relativePath,
-        fileName,
-        mimeType: entry.type || '',
-        bytes,
-      })
+      const results = await ingestFiles(importId, incoming)
+
+      const summary = {
+        imported: results.filter(r => r.outcome.status === 'imported').length,
+        duplicates: results.filter(r => r.outcome.status === 'duplicate').length,
+        skipped: results.filter(r => r.outcome.status === 'skipped').length,
+        failed: results.filter(r => r.outcome.status === 'failed').length,
+      }
+
+      return ok({ results, summary, import: imports.get(importId) })
+    } finally {
+      releaseUploadSlot(tenantId)
     }
-
-    const results = await ingestFiles(importId, incoming)
-
-    const summary = {
-      imported: results.filter(r => r.outcome.status === 'imported').length,
-      duplicates: results.filter(r => r.outcome.status === 'duplicate').length,
-      skipped: results.filter(r => r.outcome.status === 'skipped').length,
-      failed: results.filter(r => r.outcome.status === 'failed').length,
-    }
-
-    return ok({ results, summary, import: imports.get(importId) })
   }
 )

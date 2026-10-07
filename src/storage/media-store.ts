@@ -28,6 +28,7 @@ import path from 'path'
 import crypto from 'crypto'
 import { tenantPaths } from '@/config'
 import { currentTenant } from '@/tenancy/context'
+import { usageCounters } from '@/db/control-repositories'
 
 export type MediaRoot = 'originals' | 'derived' | 'creatives' | 'assets'
 
@@ -200,6 +201,17 @@ export async function writeFileAtomic(
     throw err
   }
 
+  // Storage-quota accounting is scoped to NEW, non-overwrite writes — exactly
+  // `putOriginal`'s call shape, never `putDerived`'s (`overwrite: true`).
+  // Original photos are what dominates a catalog's footprint and what the
+  // quota is meant to bound; derived assets/creatives are regenerable and
+  // only tracked via the periodic reconciliation scan
+  // (`reconcileStorageUsage`, below) rather than hooked here too — avoiding
+  // a "which previous size do I subtract" problem for every overwrite.
+  if (!options.overwrite) {
+    usageCounters.incrementStorageBytes(currentTenant().tenantId, bytes.byteLength)
+  }
+
   return { path: target, written: true, byteSize: bytes.byteLength }
 }
 
@@ -259,7 +271,20 @@ export async function statMedia(root: MediaRoot, key: string): Promise<{ size: n
 }
 
 export async function deleteMedia(root: MediaRoot, key: string): Promise<void> {
-  await fsp.rm(resolvePath(root, key), { force: true })
+  const target = resolvePath(root, key)
+  // Symmetric with writeFileAtomic's accounting: only originals are tracked
+  // incrementally, so only their delete needs to decrement. Stat before rm —
+  // obviously — and tolerate the file already being gone (a double-delete,
+  // or one that already partly failed) without throwing or double-counting.
+  if (root === 'originals') {
+    try {
+      const { size } = await fsp.stat(target)
+      usageCounters.incrementStorageBytes(currentTenant().tenantId, -size)
+    } catch {
+      // Already gone — nothing to subtract.
+    }
+  }
+  await fsp.rm(target, { force: true })
 }
 
 /** Remove every derived asset for one source hash (e.g. before re-analysis). */
@@ -338,6 +363,34 @@ export async function pruneEmptyDirectories(root: MediaRoot): Promise<number> {
 
   await walk(base)
   return removed
+}
+
+/**
+ * Recomputes the current tenant's `usage_counters.storage_bytes` from an
+ * actual disk scan across every media root, overwriting the incrementally-
+ * tracked gauge (`writeFileAtomic`/`deleteMedia`, above) with ground truth.
+ *
+ * The incremental counter only ever moves on original uploads/deletes (see
+ * both functions' doc comments) and can drift for reasons that have nothing
+ * to do with a bug: a `deleteDirectory`/`deleteDerivedTree` bulk removal
+ * doesn't know individual file sizes to subtract, a crash between a write
+ * and its accounting call loses that one delta, and derived/creative growth
+ * is never tracked incrementally at all. This is the correction — called
+ * from the storage-sweep route (`/api/storage/sweep` POST) alongside the
+ * orphan sweep, and safe to call on any cadence since it's a pure read-then-
+ * overwrite, never a delta.
+ */
+export async function reconcileStorageUsage(): Promise<number> {
+  const roots: MediaRoot[] = ['originals', 'derived', 'creatives', 'assets']
+  let total = 0
+  for (const root of roots) {
+    for (const key of await listMediaKeys(root)) {
+      const stat = await statMedia(root, key)
+      total += stat?.size ?? 0
+    }
+  }
+  usageCounters.setStorageBytes(currentTenant().tenantId, total)
+  return total
 }
 
 // ── URLs ─────────────────────────────────────────────────────────────────────

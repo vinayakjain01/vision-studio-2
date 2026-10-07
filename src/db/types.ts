@@ -182,6 +182,14 @@ export interface BatchRecord {
 
 export type JobKind = 'vision' | 'render' | 'background_fill'
 export type JobStatus = 'pending' | 'claimed' | 'running' | 'completed' | 'failed' | 'cancelled'
+/**
+ * 'interactive' jumps a tenant's own 'bulk' backlog and is ALSO fair-shared
+ * across tenants ahead of bulk — a single-photo render, a template-editor
+ * preview, or a small user-initiated batch (<= 20 jobs). 'bulk' is import
+ * analysis and larger batches. See `classifyPriority` in
+ * src/jobs/queue.ts and docs/MULTI_TENANCY.md §5.
+ */
+export type JobPriorityClass = 'interactive' | 'bulk'
 
 export interface VisionJobPayload {
   imageId: string
@@ -215,7 +223,10 @@ export type JobPayload = VisionJobPayload | RenderJobPayload | BackgroundFillJob
 
 export interface JobRecord<P = JobPayload> {
   id: string
+  /** NEVER taken from the payload or worker-reported data — see control-schema.sql's module doc. */
+  tenantId: string
   kind: JobKind
+  priorityClass: JobPriorityClass
   status: JobStatus
   priority: number
   batchId: string | null
@@ -225,12 +236,16 @@ export interface JobRecord<P = JobPayload> {
   maxAttempts: number
   workerId: string | null
   claimedAt: string | null
+  /** Refreshed on every heartbeat; reclaimStale() compares against this, not a fixed heartbeat-age threshold. */
+  leaseExpiresAt: string | null
   heartbeatAt: string | null
   /** Claimable again once this passes. Null means claimable immediately. */
   availableAt: string | null
   error: string | null
   result: Record<string, unknown> | null
   createdAt: string
+  /** Set when status first becomes 'running' — distinct from claimedAt so queue wait (started - created) is queryable per tenant (P6). */
+  startedAt: string | null
   updatedAt: string
   completedAt: string | null
 }

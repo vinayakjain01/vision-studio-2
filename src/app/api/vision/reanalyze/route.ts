@@ -12,6 +12,8 @@ import { reanalyzeAllPending, reanalyzeImport } from '@/import/import-service'
 import { images } from '@/db/repositories'
 import { enqueue } from '@/jobs/queue'
 import { ensurePoolRunning } from '@/jobs/pool'
+import { assertCanEnqueue } from '@/jobs/quota'
+import { currentTenant } from '@/tenancy/context'
 import { handler, ok, notFound } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
@@ -24,10 +26,14 @@ export const POST = handler(async (request: NextRequest) => {
     const image = images.get(body.imageId)
     if (!image) return notFound('image not found')
 
+    const tenantId = currentTenant().tenantId
+    assertCanEnqueue(tenantId, 1)
     images.setVisionStatus(image.id, 'pending')
-    const { inserted } = enqueue([
+    const { inserted } = enqueue(tenantId, [
       {
         kind: 'vision',
+        // Someone is watching this one image.
+        priorityClass: 'interactive',
         payload: {
           imageId: image.id,
           sourceHash: image.sourceHash,

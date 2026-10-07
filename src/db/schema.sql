@@ -229,50 +229,18 @@ CREATE TABLE IF NOT EXISTS batches (
 
 CREATE INDEX IF NOT EXISTS idx_batches_created ON batches (created_at DESC);
 
--- ── Jobs ─────────────────────────────────────────────────────────────────────
--- Single queue table backing both the vision and render worker pools. Claiming
--- is a conditional UPDATE inside a transaction, so concurrent workers can never
--- take the same row.
-
-CREATE TABLE IF NOT EXISTS jobs (
-  id              TEXT PRIMARY KEY,
-  -- 'background_fill' calls a remote API (Cloudinary) on its own worker
-  -- slots, never the local vision/render pool — see src/jobs/pool.ts.
-  kind            TEXT NOT NULL CHECK (kind IN ('vision', 'render', 'background_fill')),
-  status          TEXT NOT NULL DEFAULT 'pending'
-                    CHECK (status IN ('pending', 'claimed', 'running', 'completed', 'failed', 'cancelled')),
-  priority        INTEGER NOT NULL DEFAULT 100,   -- lower runs sooner
-  batch_id        TEXT REFERENCES batches (id) ON DELETE CASCADE,
-  -- Idempotency key. A pending/running job with the same key is never queued
-  -- twice — re-requesting analysis for an image already in flight is a no-op.
-  dedupe_key      TEXT,
-  payload         TEXT NOT NULL,                  -- job-kind-specific JSON
-  attempts        INTEGER NOT NULL DEFAULT 0,
-  max_attempts    INTEGER NOT NULL DEFAULT 3,
-  worker_id       TEXT,
-  claimed_at      TEXT,
-  heartbeat_at    TEXT,
-  -- NULL means claimable as soon as it's pending. Set to a future timestamp by
-  -- `queue.defer()` — a render job waiting on a `background_fill` job to finish
-  -- defers itself rather than either blocking a worker on someone else's job or
-  -- burning retry attempts in a hot loop against it.
-  available_at    TEXT,
-  error           TEXT,
-  result          TEXT,
-  created_at      TEXT NOT NULL,
-  updated_at      TEXT NOT NULL,
-  completed_at    TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_jobs_queue     ON jobs (kind, status, priority ASC, created_at ASC);
-CREATE INDEX IF NOT EXISTS idx_jobs_batch     ON jobs (batch_id, status);
-CREATE INDEX IF NOT EXISTS idx_jobs_heartbeat ON jobs (status, heartbeat_at);
-
--- Only one live job per dedupe key. Partial index so completed/failed rows do
--- not block a legitimate re-run.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_dedupe
-  ON jobs (dedupe_key)
-  WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'claimed', 'running');
+-- ── Jobs — REMOVED from this schema in P3, moved to control.db ─────────────
+-- The queue is now global (one table across every tenant, so a worker can
+-- claim fairly across all of them in one transaction — see
+-- docs/MULTI_TENANCY.md §3.1 and src/db/control-schema.sql). This baseline
+-- deliberately no longer creates a `jobs` table: new tenant databases never
+-- get one.
+--
+-- A tenant database created before this change still HAS its own `jobs`
+-- table from when this file used to include it — untouched, on purpose, for
+-- rollback (see the P3 phase report and scripts/tenants-migrate-legacy.ts's
+-- job-migration step, which copies its rows into control.db once and leaves
+-- the original table in place rather than dropping it).
 
 -- ── Creatives ────────────────────────────────────────────────────────────────
 -- Rendered output. `framing` stores the exact resolved crop box and anchor

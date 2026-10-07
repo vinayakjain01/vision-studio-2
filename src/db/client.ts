@@ -96,13 +96,14 @@ function openTenantDb(tenantId: string): Db {
  *
  * This is the one deliberate, explicit exception to "every tenant DB access
  * goes through the ambient context" — for maintenance code that is not
- * serving a request and has no session to derive a tenant from at all:
+ * serving a request and has no session to derive a tenant from at all yet:
  * `scripts/migrate.ts` iterating every tenant, `scripts/tenants-migrate-
- * legacy.ts` creating the first one, and the worker pool's current
- * single-default-tenant bridge (see `src/jobs/pool.ts` — full per-job
- * tenant binding is P3 scope). Application code serving a live request must
- * use `getDb()` instead, never this — a lint rule enforces that boundary
- * (P2).
+ * legacy.ts` creating the first one. (Workers no longer need this exception
+ * as of P3 — `worker-entry.ts` claims a job, learns its `tenantId`, and
+ * establishes real `TenantContext` via `runWithTenant` before calling
+ * `getDb()` like any other request-serving code.) Application code serving a
+ * live request must use `getDb()` instead, never this — a lint rule
+ * enforces that boundary (P2).
  *
  * Same LRU as `getDb()` — both read and write the same `tenantHandles()`
  * map, so a tenant opened one way is reused the other.

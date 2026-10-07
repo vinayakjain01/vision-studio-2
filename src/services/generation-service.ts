@@ -26,6 +26,8 @@ import { resolveTemplate, type RuleSubject } from '@/rules/resolver'
 import { isShotTypeApplicable, shotTypeUniverse } from '@/framing/solver'
 import * as queue from '@/jobs/queue'
 import { ensurePoolRunning } from '@/jobs/pool'
+import { assertCanEnqueue } from '@/jobs/quota'
+import { currentTenant } from '@/tenancy/context'
 import { config } from '@/config'
 import type { BatchRecord, ImageRecord, ProductRecord } from '@/db/types'
 import type { ShotType } from '@/vision/types'
@@ -296,7 +298,12 @@ export interface StartBatchResult {
 }
 
 export function startBatch(name: string, scope: BatchScope): StartBatchResult {
+  const tenantId = currentTenant().tenantId
   const plan = planBatch(scope)
+  // Created in the tenant's own app.db FIRST, then its jobs in one control.db
+  // transaction — see docs/MULTI_TENANCY.md §3.1's enqueue-ordering decision.
+  // If the enqueue below throws, the batch row survives with zero jobs,
+  // marked failed rather than stuck "queued" forever with nothing coming.
   const batch = batches.create(name)
 
   const renderable = plan.items.filter(
@@ -306,23 +313,37 @@ export function startBatch(name: string, scope: BatchScope): StartBatchResult {
       (!item.existing || scope.overwrite === true)
   )
 
-  const { inserted } = queue.enqueue(
-    renderable.map(item => ({
-      kind: 'render' as const,
-      batchId: batch.id,
-      payload: {
-        imageId: item.imageId,
-        productId: item.productId,
-        templateId: item.templateId!,
-        sourceHash: images.get(item.imageId)?.sourceHash ?? '',
-      },
-      priority: 50,
-      maxAttempts: renderMaxAttempts(item.templateId!),
-      // Scoped to the batch so the same image+template can be re-rendered in a
-      // later batch, while duplicates within one batch collapse.
-      dedupeKey: `render:${batch.id}:${item.imageId}:${item.templateId}`,
-    }))
-  )
+  // A small, user-initiated batch jumps bulk work (its own tenant's AND every
+  // other tenant's) — see JobPriorityClass's doc comment. A large batch is
+  // exactly the "import analysis / big run" case 'bulk' exists for.
+  const priorityClass = queue.classifyBatchPriority(renderable.length)
+
+  let inserted = 0
+  try {
+    assertCanEnqueue(tenantId, renderable.length)
+    ;({ inserted } = queue.enqueue(
+      tenantId,
+      renderable.map(item => ({
+        kind: 'render' as const,
+        priorityClass,
+        batchId: batch.id,
+        payload: {
+          imageId: item.imageId,
+          productId: item.productId,
+          templateId: item.templateId!,
+          sourceHash: images.get(item.imageId)?.sourceHash ?? '',
+        },
+        priority: 50,
+        maxAttempts: renderMaxAttempts(item.templateId!),
+        // Scoped to the batch so the same image+template can be re-rendered in a
+        // later batch, while duplicates within one batch collapse.
+        dedupeKey: `render:${batch.id}:${item.imageId}:${item.templateId}`,
+      }))
+    ))
+  } catch (err) {
+    batches.setStatus(batch.id, 'failed')
+    throw err
+  }
 
   batches.setTotal(batch.id, inserted)
   if (inserted > 0) {
@@ -353,10 +374,11 @@ export interface BatchProgress {
 }
 
 export function getBatchProgress(batchId: string): BatchProgress | null {
-  const batch = batches.refresh(batchId)
+  const tenantId = currentTenant().tenantId
+  const batch = batches.refresh(batchId, queue.batchJobCounts(tenantId, batchId))
   if (!batch) return null
 
-  const jobs = queue.listByBatch(batchId, { limit: 100000 })
+  const jobs = queue.listByBatch(tenantId, batchId, { limit: 100000 })
 
   const stats: queue.QueueStats = {
     pending: 0,
@@ -406,19 +428,21 @@ function estimateEta(batch: BatchRecord, total: number, finished: number): numbe
 }
 
 export function cancelBatch(batchId: string): { cancelled: number } {
-  const cancelled = queue.cancelBatch(batchId)
+  const tenantId = currentTenant().tenantId
+  const cancelled = queue.cancelBatch(tenantId, batchId)
   batches.setStatus(batchId, 'cancelled')
-  batches.refresh(batchId)
+  batches.refresh(batchId, queue.batchJobCounts(tenantId, batchId))
   return { cancelled }
 }
 
 export function retryBatchFailures(batchId: string): { retried: number } {
-  const retried = queue.retryBatch(batchId)
+  const tenantId = currentTenant().tenantId
+  const retried = queue.retryBatch(tenantId, batchId)
   if (retried > 0) {
     batches.setStatus(batchId, 'running')
     ensurePoolRunning()
   }
-  batches.refresh(batchId)
+  batches.refresh(batchId, queue.batchJobCounts(tenantId, batchId))
   return { retried }
 }
 
@@ -446,12 +470,16 @@ export async function renderOnce(
   imageId: string,
   templateId: string
 ): Promise<{ creativeId: string; storageKey: string }> {
+  const tenantId = currentTenant().tenantId
   const image = images.get(imageId)
   if (!image) throw new Error('image not found')
 
-  const { inserted, ids } = queue.enqueue([
+  assertCanEnqueue(tenantId, 1)
+  const { inserted, ids } = queue.enqueue(tenantId, [
     {
       kind: 'render',
+      // Someone is watching this one — the canonical 'interactive' case.
+      priorityClass: 'interactive',
       payload: {
         imageId,
         productId: image.productId,
@@ -484,7 +512,7 @@ export async function renderOnce(
       ? config.cloudinary.requestTimeoutMs * 2 + 60_000
       : 120_000)
   for (;;) {
-    const job = queue.get(jobId)
+    const job = queue.get(tenantId, jobId)
     if (!job) throw new Error('render job disappeared from the queue')
     if (job.status === 'completed') break
     if (job.status === 'failed' || job.status === 'cancelled') {

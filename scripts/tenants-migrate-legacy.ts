@@ -32,6 +32,7 @@ import { migrateControl, migrate } from '../src/db/migrate'
 import { users, tenants, memberships } from '../src/db/control-repositories'
 import { hashPassword } from '../src/auth/password'
 import { ensureMediaRoots } from '../src/storage/media-store'
+import { migrateTenantJobs } from './lib/legacy-migration-jobs'
 
 const LEGACY_DB_PATH = path.join(config.paths.dataDir, 'vision-studio.db')
 const LEGACY_MEDIA_DIR = path.join(config.paths.dataDir, 'media')
@@ -212,18 +213,46 @@ async function main() {
   const freshTenantDb = openTenantDbById(tenant.id)
   migrate(freshTenantDb)
 
+  // ── P3: copy this tenant's legacy jobs into control.db's global queue ────
+  const { copied: jobsCopied, legacyCount: legacyJobCount } = migrateTenantJobs(
+    tenant.id,
+    freshTenantDb,
+    controlDb
+  )
+  if (legacyJobCount > 0) {
+    console.log(`  copied ${jobsCopied} of ${legacyJobCount} legacy job row(s) into control.db`)
+  }
+
   // ── Verify ──────────────────────────────────────────────────────────────
   console.log('\nVerifying...')
   let ok = true
 
   const afterCounts = countRows(freshTenantDb)
   for (const table of TABLES_TO_COUNT) {
+    // `jobs` is verified separately below, against control.db — the table
+    // this check reads (the tenant's own, pre-P3 one) is deliberately left
+    // untouched, so its count trivially still matches itself.
+    if (table === 'jobs') continue
     if (beforeCounts[table] !== afterCounts[table]) {
       ok = false
       console.error(`  ROW COUNT MISMATCH  ${table}: before=${beforeCounts[table]} after=${afterCounts[table]}`)
     }
   }
-  if (ok) console.log(`  row counts match for all ${TABLES_TO_COUNT.length} tables`)
+  if (ok) console.log(`  row counts match for all ${TABLES_TO_COUNT.length - 1} tables`)
+
+  if (legacyJobCount > 0) {
+    const controlJobCount = (
+      controlDb.prepare('SELECT COUNT(*) AS c FROM jobs WHERE tenant_id = ?').get(tenant.id) as { c: number }
+    ).c
+    if (controlJobCount !== legacyJobCount) {
+      ok = false
+      console.error(
+        `  JOB ROW COUNT MISMATCH  control.db has ${controlJobCount}, legacy app.db had ${legacyJobCount}`
+      )
+    } else {
+      console.log(`  job row count matches control.db (${controlJobCount})`)
+    }
+  }
 
   const tenantPathsAfter = tenantPaths(tenant.id)
   for (const sub of MEDIA_SUBDIRS) {

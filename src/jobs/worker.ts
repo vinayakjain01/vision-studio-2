@@ -16,7 +16,9 @@ import {
   hasOverflow,
   aiExtendCacheKind,
 } from '@/render/compositor'
-import { generativeFill, looksLikeCompleteJpeg, buildFillPrompt } from '@/services/cloudinary-service'
+import { looksLikeCompleteJpeg, buildFillPrompt } from '@/services/cloudinary-service'
+import { dispatchGenerativeFill } from './ai-extend-dispatcher'
+import { currentTenant } from '@/tenancy/context'
 import { creatives, images, products, templates, visionAnalyses } from '@/db/repositories'
 import {
   readMedia,
@@ -196,7 +198,7 @@ export async function handleRenderJob(
         // than inferring it from elapsed time. Three genuinely different
         // situations hide behind "the file isn't there yet".
         const dedupeKey = backgroundFillDedupeKey(payload)
-        const dependency = queue.findLatestByDedupeKey(dedupeKey)
+        const dependency = queue.findLatestByDedupeKey(currentTenant().tenantId, dedupeKey)
         const alive =
           dependency !== null &&
           (dependency.status === 'pending' ||
@@ -297,13 +299,20 @@ function backgroundFillDedupeKey(payload: RenderJobPayload): string {
 }
 
 function ensureBackgroundFillQueued(payload: RenderJobPayload): void {
+  const tenantId = currentTenant().tenantId
   const dedupeKey = backgroundFillDedupeKey(payload)
-  const recent = queue.findRecent(dedupeKey, queue.BACKGROUND_FILL_RETRY_COOLDOWN_MS)
+  const recent = queue.findRecent(tenantId, dedupeKey, queue.BACKGROUND_FILL_RETRY_COOLDOWN_MS)
   if (recent) return
 
-  queue.enqueue([
+  queue.enqueue(tenantId, [
     {
       kind: 'background_fill',
+      // background_fill jobs run on their own dedicated worker slots (never
+      // competing with vision/render for pool capacity — see pool.ts), but
+      // 'interactive' still matters for cross-tenant fairness: this job is
+      // always unblocking a render something else is waiting on, never
+      // queued speculatively ahead of need.
+      priorityClass: 'interactive',
       payload: {
         imageId: payload.imageId,
         productId: payload.productId,
@@ -368,16 +377,19 @@ export async function handleBackgroundFillJob(
     return { skipped: true, reason: 'already cached' }
   }
 
-  const result = await generativeFill({
-    photo: target.photo,
-    canvasWidth: target.canvasWidth,
-    canvasHeight: target.canvasHeight,
-    offsetX: target.offsetX,
-    offsetY: target.offsetY,
-    placedWidth: target.placedWidth,
-    placedHeight: target.placedHeight,
-    prompt,
-  })
+  const result = await dispatchGenerativeFill(
+    { tenantId: currentTenant().tenantId },
+    {
+      photo: target.photo,
+      canvasWidth: target.canvasWidth,
+      canvasHeight: target.canvasHeight,
+      offsetX: target.offsetX,
+      offsetY: target.offsetY,
+      placedWidth: target.placedWidth,
+      placedHeight: target.placedHeight,
+      prompt,
+    }
+  )
 
   await putDerived(sourceHash, kind, 'jpg', result.bytes)
 

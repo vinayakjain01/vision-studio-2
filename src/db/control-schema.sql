@@ -5,9 +5,9 @@
 -- photo or a product name, and is the one database every request touches
 -- (to resolve who's asking) before it ever opens a tenant's own data.
 --
--- The job queue and its scheduler bookkeeping (tenant_queue_state) are NOT
--- here yet — that's P3 (scheduler) scope. P1 only needs identity, sessions,
--- tenancy, quota SCHEMA (enforcement is also P3), and an audit trail.
+-- The job queue and its scheduler bookkeeping (tenant_queue_state) moved
+-- here in P3 — see docs/MULTI_TENANCY.md §3.1/§3.2/§5. Quota SCHEMA has been
+-- here since P1; P3 adds enforcement (src/jobs/quota.ts) against it.
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -122,6 +122,113 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 CREATE INDEX IF NOT EXISTS idx_audit_tenant  ON audit_log (tenant_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_actor   ON audit_log (actor_user_id, created_at DESC);
+
+-- ── Global job queue (P3) ───────────────────────────────────────────────────
+-- Moved here from each tenant's app.db (see docs/MULTI_TENANCY.md §3.1):
+-- SQLite's single-writer guarantee is per FILE, and a worker claiming across
+-- every tenant's queue in one transaction needs them all in one file. No FK
+-- to `batches` — that table lives in the tenant's own app.db, a separate
+-- file; cascade-on-delete is an explicit two-step application operation
+-- instead (jobs deleted first, then the batch row — see generation-service.ts).
+--
+-- `tenant_id` is NEVER taken from job payloads or worker-reported data — it
+-- is set once, at enqueue time, from whichever tenant's ambient context (an
+-- API route) or claimed-job context (a worker, via runWithTenant) called
+-- `enqueue()`. Every other queue operation takes it as an explicit parameter
+-- scoped by the caller's own context, same principle as `getDb()`.
+CREATE TABLE IF NOT EXISTS jobs (
+  id                TEXT PRIMARY KEY,
+  tenant_id         TEXT NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+  kind              TEXT NOT NULL CHECK (kind IN ('vision', 'render', 'background_fill')),
+  -- 'interactive' jumps a tenant's own 'bulk' backlog and is ALSO fair-shared
+  -- across tenants ahead of bulk (see claim() in src/jobs/queue.ts) — a
+  -- single-photo render or template-editor preview, vs. an import's vision
+  -- analysis or a larger batch. A 'bulk' job waiting past
+  -- BULK_MAX_WAIT_SECONDS is promoted here so bulk work can never starve
+  -- (see promoteAgedBulkJobs()).
+  priority_class    TEXT NOT NULL DEFAULT 'bulk' CHECK (priority_class IN ('interactive', 'bulk')),
+  status            TEXT NOT NULL DEFAULT 'pending'
+                      CHECK (status IN ('pending', 'claimed', 'running', 'completed', 'failed', 'cancelled')),
+  priority          INTEGER NOT NULL DEFAULT 100,   -- lower runs sooner, within one tenant's own queue
+  batch_id          TEXT,                           -- no FK — see module doc above
+  dedupe_key        TEXT,
+  payload           TEXT NOT NULL,                  -- IDs/hashes only, never filesystem paths
+  attempts          INTEGER NOT NULL DEFAULT 0,
+  max_attempts      INTEGER NOT NULL DEFAULT 3,
+  worker_id         TEXT,
+  claimed_at        TEXT,
+  -- Explicit expiry, refreshed on every heartbeat. reclaimStale() compares
+  -- against this instead of a fixed "heartbeat age" threshold, so a slower
+  -- job kind (background_fill, bound by a remote API) can carry a longer
+  -- lease without changing the sweep's own cadence.
+  lease_expires_at  TEXT,
+  heartbeat_at      TEXT,
+  -- NULL means claimable as soon as it's pending. Set to a future timestamp
+  -- by queue.defer()/a backoff retry.
+  available_at      TEXT,
+  error             TEXT,
+  result            TEXT,
+  created_at        TEXT NOT NULL,
+  started_at        TEXT,                           -- set when status first becomes 'running'
+  updated_at        TEXT NOT NULL,
+  completed_at      TEXT
+);
+
+-- Claim path: for one tenant, the oldest eligible job of a given kind/class.
+-- Walked once per candidate tenant per claim() call (see its doc comment for
+-- why this, not a single cross-tenant scan, is what keeps claim latency flat
+-- as the table grows) — covers the WHERE and ORDER BY entirely, so each
+-- probe is an index seek, never a scan of the whole table.
+CREATE INDEX IF NOT EXISTS idx_jobs_tenant_claim
+  ON jobs (tenant_id, kind, status, priority_class, priority, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_batch     ON jobs (tenant_id, batch_id, status);
+CREATE INDEX IF NOT EXISTS idx_jobs_heartbeat ON jobs (status, lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_pending_age ON jobs (priority_class, status, created_at);
+
+-- Scoped to (tenant_id, dedupe_key), not globally — the P1-era single-tenant
+-- version of this index let one tenant's in-flight job suppress another
+-- tenant's otherwise-identical request (same photo hash, different
+-- catalogs). Partial so completed/failed rows never block a legitimate
+-- re-run.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_dedupe
+  ON jobs (tenant_id, dedupe_key)
+  WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'claimed', 'running');
+
+-- Denormalized fair-share bookkeeping (§3.2/§5) — `running_jobs` is
+-- maintained transactionally by claim()/complete()/fail()/reclaimStale()
+-- rather than computed live, so the claim query never does a GROUP BY scan
+-- over `jobs`. `weight` starts as a copy of `quotas.weight` (admin-editable
+-- scheduler share) at tenant-creation time; the two are intentionally two
+-- columns rather than one; see control-repositories.ts's `tenants.create`.
+CREATE TABLE IF NOT EXISTS tenant_queue_state (
+  tenant_id     TEXT PRIMARY KEY REFERENCES tenants (id) ON DELETE CASCADE,
+  weight        REAL NOT NULL DEFAULT 1.0,
+  running_jobs  INTEGER NOT NULL DEFAULT 0
+);
+
+-- ── AI Extend dispatcher state (P3) ─────────────────────────────────────────
+-- Cloudinary credentials are one shared, global account (§3.4) called from
+-- several separate `background_fill` WORKER PROCESSES at once — an in-memory
+-- JS semaphore in one process cannot coordinate with the others, so the
+-- dispatcher's global concurrency slot and token-bucket rate limiter live
+-- here instead, claimed the same conditional-UPDATE way a job is. Single row
+-- (id=1), never more.
+CREATE TABLE IF NOT EXISTS ai_extend_global_state (
+  id              INTEGER PRIMARY KEY CHECK (id = 1),
+  in_flight       INTEGER NOT NULL DEFAULT 0,
+  tokens          REAL NOT NULL DEFAULT 0,
+  last_refill_at  TEXT NOT NULL
+);
+
+-- Per-tenant concurrency cap on AI Extend calls specifically — separate from
+-- `tenant_queue_state.running_jobs` (the general scheduler's count across
+-- every job kind) because this one gates a paid, rate-limited remote API,
+-- not local compute.
+CREATE TABLE IF NOT EXISTS ai_extend_tenant_state (
+  tenant_id   TEXT PRIMARY KEY REFERENCES tenants (id) ON DELETE CASCADE,
+  in_flight   INTEGER NOT NULL DEFAULT 0
+);
 
 -- Same bookkeeping pattern as the tenant schema's own table — lets the
 -- lazy per-tenant-DB migration scheme and control.db's migration share one

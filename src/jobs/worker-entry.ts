@@ -1,10 +1,19 @@
 /**
  * Worker process entry point.
  *
- * One long-lived child process per pool slot. It loops: claim a job, run it,
- * report over IPC, repeat. ONNX sessions load once per process on the first
- * vision job and stay resident — the ~2s model load would otherwise be paid on
- * every image.
+ * One long-lived child process per pool slot. It loops: claim a job (from
+ * across EVERY tenant — see queue.claim()'s doc comment), bind that job's own
+ * tenant context, run it, report over IPC, repeat. ONNX sessions load once
+ * per process on the first vision job and stay resident.
+ *
+ * ── Per-job tenant binding (P3) ──────────────────────────────────────────────
+ * Removed in P3: the P1/P2 bridge that ran this whole process as ONE tenant
+ * for its entire lifetime (see the deleted src/jobs/default-tenant.ts). Each
+ * claimed job now carries its own `tenantId`, and `runWithTenant` wraps ONLY
+ * that job's handler call — a vision worker can process tenant A's image,
+ * then tenant B's, in consecutive loop iterations, each fully isolated.
+ * AsyncLocalStorage does not leak between them because nothing outlives the
+ * `await` inside `runOne`'s `runWithTenant(...)` call.
  *
  * ── Process, not thread ──────────────────────────────────────────────────────
  * A separate process rather than a `worker_thread`, for two reasons that both
@@ -20,19 +29,21 @@
  *     startup, so this TypeScript file runs directly. Worker threads do not
  *     apply it and fail with "Unknown file extension .ts".
  *
- * Each process owns its own SQLite handle (WAL makes concurrent access safe) and
- * its own ONNX sessions. Coordination happens entirely through the jobs table.
+ * Each process owns its own tenant DB handles (via the same bounded LRU
+ * `db/client.ts` uses everywhere — `openTenantDbById`/`getDb`) and its own
+ * ONNX sessions. Coordination happens entirely through control.db's `jobs`
+ * table.
  *
- * Spawned by `pool.ts` via `child_process.fork`.
+ * Spawned by `pool.ts` via `child_process.spawn`.
  */
 
 import * as queue from './queue'
 import { handleVisionJob, handleRenderJob, handleBackgroundFillJob, BackgroundNotReadyError } from './worker'
 import { CloudinaryServiceError } from '@/services/cloudinary-service'
+import { AiExtendQuotaExceededError, AiExtendBusyError } from './ai-extend-dispatcher'
 import { closeDb } from '@/db/client'
 import { VisionUnavailableError } from '@/vision/types'
 import { runWithTenant } from '@/tenancy/context'
-import { resolveDefaultTenantId } from './default-tenant'
 import type { BackgroundFillJobPayload, JobKind, RenderJobPayload, VisionJobPayload } from '@/db/types'
 
 interface WorkerConfig {
@@ -44,10 +55,19 @@ interface WorkerConfig {
 export type WorkerMessage =
   | { type: 'ready'; workerId: string }
   | {
+      type: 'job:started'
+      workerId: string
+      jobId: string
+      kind: JobKind
+      tenantId: string
+      startedAt: string
+    }
+  | {
       type: 'job:done'
       workerId: string
       jobId: string
       kind: JobKind
+      tenantId: string
       batchId: string | null
       result: unknown
     }
@@ -56,6 +76,7 @@ export type WorkerMessage =
       workerId: string
       jobId: string
       kind: JobKind
+      tenantId: string
       batchId: string | null
       error: string
       retrying: boolean
@@ -98,35 +119,47 @@ function post(message: WorkerMessage): void {
 }
 
 async function runOne(kind: JobKind): Promise<boolean> {
-  const [job] = queue.claim(kind, cfg.workerId, 1)
+  const job = queue.claim(kind, cfg.workerId)
   if (!job) return false
 
-  queue.markRunning(job.id)
+  queue.markRunning(job.id, cfg.workerId)
+  post({
+    type: 'job:started',
+    workerId: cfg.workerId,
+    jobId: job.id,
+    kind: job.kind,
+    tenantId: job.tenantId,
+    startedAt: new Date().toISOString(),
+  })
 
   // Vision analysis runs for seconds; without a heartbeat the stale-claim
   // sweeper would reclaim a job that is progressing normally.
   const beat = setInterval(() => {
     try {
-      queue.heartbeat(job.id)
+      queue.heartbeat(job.id, cfg.workerId)
     } catch {
       // Transient lock contention — the next beat covers it.
     }
   }, 5000)
 
-  try {
-    const result =
-      job.kind === 'vision'
-        ? await handleVisionJob(job.payload as VisionJobPayload)
-        : job.kind === 'background_fill'
-          ? await handleBackgroundFillJob(job.payload as BackgroundFillJobPayload)
-          : await handleRenderJob(job.payload as RenderJobPayload, { batchId: job.batchId })
+  const tenantCtx = { tenantId: job.tenantId, userId: 'system', role: 'owner' as const }
 
-    queue.complete(job.id, result as Record<string, unknown>)
+  try {
+    const result = await runWithTenant(tenantCtx, () =>
+      job.kind === 'vision'
+        ? handleVisionJob(job.payload as VisionJobPayload)
+        : job.kind === 'background_fill'
+          ? handleBackgroundFillJob(job.payload as BackgroundFillJobPayload)
+          : handleRenderJob(job.payload as RenderJobPayload, { batchId: job.batchId })
+    )
+
+    queue.complete(job.id, cfg.workerId, result as Record<string, unknown>)
     post({
       type: 'job:done',
       workerId: cfg.workerId,
       jobId: job.id,
       kind: job.kind,
+      tenantId: job.tenantId,
       batchId: job.batchId,
       result,
     })
@@ -138,27 +171,62 @@ async function runOne(kind: JobKind): Promise<boolean> {
     // reason and bury the real cause in thousands of identical failures, so
     // park it for an operator to retry once models are installed.
     if (err instanceof VisionUnavailableError) {
-      queue.park(job.id, message)
+      queue.park(job.id, cfg.workerId, message)
       post({
         type: 'job:failed',
         workerId: cfg.workerId,
         jobId: job.id,
         kind: job.kind,
+        tenantId: job.tenantId,
         batchId: job.batchId,
         error: message,
         retrying: false,
+      })
+    } else if (err instanceof AiExtendQuotaExceededError) {
+      // A quota (per-tenant or the whole account's circuit breaker) needs a
+      // human to raise it or for the next billing period to arrive — not
+      // something a retry can fix, and retrying would just restate the same
+      // rejection on every attempt across every queued fill for this tenant.
+      queue.park(job.id, cfg.workerId, message)
+      post({
+        type: 'job:failed',
+        workerId: cfg.workerId,
+        jobId: job.id,
+        kind: job.kind,
+        tenantId: job.tenantId,
+        batchId: job.batchId,
+        error: message,
+        retrying: false,
+      })
+    } else if (err instanceof AiExtendBusyError) {
+      // Capacity (concurrency or the rate limiter), not the request, was the
+      // problem — identical in spirit to a Cloudinary rate-limit response,
+      // so it gets the same short, attempt-refunded defer.
+      queue.defer(job.id, cfg.workerId, queue.BACKGROUND_FILL_POLL_MS, message, { refundAttempt: true })
+      post({
+        type: 'job:failed',
+        workerId: cfg.workerId,
+        jobId: job.id,
+        kind: job.kind,
+        tenantId: job.tenantId,
+        batchId: job.batchId,
+        error: message,
+        retrying: true,
       })
     } else if (err instanceof CloudinaryServiceError && err.kind === 'rate_limited') {
       // Cloudinary throttled us, which says nothing about this job — the
       // work is still valid and will succeed shortly. Backing off without
       // consuming an attempt keeps a burst from converting a temporary rate
-      // limit into permanently failed renders across a whole batch.
-      queue.defer(job.id, queue.BACKGROUND_FILL_POLL_MS * 4, message, { refundAttempt: true })
+      // limit into permanently failed renders across a whole batch. Honor
+      // Retry-After when Cloudinary sent one.
+      const delayMs = err.retryAfterMs ?? queue.BACKGROUND_FILL_POLL_MS * 4
+      queue.defer(job.id, cfg.workerId, delayMs, message, { refundAttempt: true })
       post({
         type: 'job:failed',
         workerId: cfg.workerId,
         jobId: job.id,
         kind: job.kind,
+        tenantId: job.tenantId,
         batchId: job.batchId,
         error: message,
         retrying: true,
@@ -172,12 +240,13 @@ async function runOne(kind: JobKind): Promise<boolean> {
       // would burn every attempt on every image in the batch against the
       // same wall and bury the real cause in identical failures, so park it
       // the way a missing model does.
-      queue.park(job.id, message)
+      queue.park(job.id, cfg.workerId, message)
       post({
         type: 'job:failed',
         workerId: cfg.workerId,
         jobId: job.id,
         kind: job.kind,
+        tenantId: job.tenantId,
         batchId: job.batchId,
         error: message,
         retrying: false,
@@ -196,7 +265,7 @@ async function runOne(kind: JobKind): Promise<boolean> {
       // forever. If it is NOT alive, the attempt is charged as before, so a
       // render that can never find its dependency still terminates.
       if (err.dependencyActive || job.attempts < job.maxAttempts) {
-        queue.defer(job.id, queue.BACKGROUND_FILL_POLL_MS, message, {
+        queue.defer(job.id, cfg.workerId, queue.BACKGROUND_FILL_POLL_MS, message, {
           refundAttempt: err.dependencyActive,
         })
         post({
@@ -204,29 +273,32 @@ async function runOne(kind: JobKind): Promise<boolean> {
           workerId: cfg.workerId,
           jobId: job.id,
           kind: job.kind,
+          tenantId: job.tenantId,
           batchId: job.batchId,
           error: message,
           retrying: true,
         })
       } else {
-        queue.park(job.id, `gave up waiting: ${message}`)
+        queue.park(job.id, cfg.workerId, `gave up waiting: ${message}`)
         post({
           type: 'job:failed',
           workerId: cfg.workerId,
           jobId: job.id,
           kind: job.kind,
+          tenantId: job.tenantId,
           batchId: job.batchId,
           error: `gave up waiting: ${message}`,
           retrying: false,
         })
       }
     } else {
-      const { retrying } = queue.fail(job.id, message)
+      const { retrying } = queue.fail(job.id, cfg.workerId, message)
       post({
         type: 'job:failed',
         workerId: cfg.workerId,
         jobId: job.id,
         kind: job.kind,
+        tenantId: job.tenantId,
         batchId: job.batchId,
         error: message,
         retrying,
@@ -283,12 +355,7 @@ process.on('disconnect', () => {
   running = false
 })
 
-// P1 bridge — see src/jobs/default-tenant.ts's doc comment: the whole
-// process runs as one tenant until P3's global queue carries a tenantId per
-// job. AsyncLocalStorage propagates through every await inside `loop()`,
-// including its own setTimeout-based backoff, so this one wrapper covers
-// the worker's entire lifetime.
-runWithTenant({ tenantId: resolveDefaultTenantId(), userId: 'system', role: 'owner' }, loop)
+loop()
   .catch(err => {
     console.error(`[worker ${cfg.workerId}] fatal:`, err)
     process.exitCode = 1

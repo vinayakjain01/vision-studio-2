@@ -40,6 +40,8 @@ import {
   pruneEmptyDirectories,
   statMedia,
 } from '@/storage/media-store'
+import * as queue from '@/jobs/queue'
+import { currentTenant } from '@/tenancy/context'
 
 export interface DeleteResult {
   /** Rows removed, by kind. */
@@ -200,7 +202,14 @@ export async function deleteBatch(batchId: string): Promise<DeleteResult | null>
   // so removing the batch first would orphan them — they would survive with a
   // null batch and become unreachable rows pointing at deleted files.
   const removedCreatives = creatives.removeForBatch(batchId)
-  batches.remove(batchId) // cascades jobs
+  // Jobs live in control.db now, a different file with no FK to this
+  // tenant's `batches` table (docs/MULTI_TENANCY.md §3.1) — `batches.remove`
+  // below does NOT cascade them the way it used to pre-P3. Deleted here,
+  // first, same ordering reasoning as the creative rows above: deleting the
+  // batch row first would leave job rows pointing at a batch_id nothing can
+  // look up anymore.
+  queue.deleteJobsForBatch(currentTenant().tenantId, batchId)
+  batches.remove(batchId)
 
   const files = await purgeCreativeFiles(creativeKeys)
   // Creatives are stored under creatives/<batchId>/, so the directory is left

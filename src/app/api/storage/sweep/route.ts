@@ -7,7 +7,7 @@
  */
 
 import { config } from '@/config'
-import { listMediaKeys, statMedia, type MediaRoot } from '@/storage/media-store'
+import { listMediaKeys, statMedia, reconcileStorageUsage, type MediaRoot } from '@/storage/media-store'
 import { sweepOrphanedMedia } from '@/services/cleanup-service'
 import { handler, ok } from '@/lib/api-handler'
 
@@ -37,5 +37,11 @@ export const GET = handler(async () => {
 })
 
 export const POST = handler(async () => {
-  return ok(await sweepOrphanedMedia())
+  const result = await sweepOrphanedMedia()
+  // Correct the incrementally-tracked storage quota gauge from an actual
+  // disk scan — the sweep itself just changed what's on disk (and a bulk
+  // directory removal elsewhere might have too, uncounted) — see
+  // reconcileStorageUsage()'s doc comment.
+  const storageBytes = await reconcileStorageUsage()
+  return ok({ ...result, storageBytes })
 })

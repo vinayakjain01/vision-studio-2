@@ -964,31 +964,20 @@ export const batches = {
   },
 
   /**
-   * Recompute progress counters from the jobs table and settle the batch status.
+   * Settle progress counters and status from job counts the caller already
+   * computed (`queue.batchJobCounts()` — control.db, a different file than
+   * this one, so this function can no longer query `jobs` itself; see
+   * docs/MULTI_TENANCY.md §3.1).
    *
-   * Derived rather than incremented: a worker crash between "job completed" and
-   * "counter incremented" would otherwise leave a batch permanently short of
-   * its total and stuck at `running`.
+   * Takes the counts as input rather than deriving them here: a worker crash
+   * between "job completed" and "counter applied" would otherwise leave a
+   * batch permanently short of its total and stuck at `running`, so every
+   * call site re-derives the full counts from `queue.batchJobCounts()` on
+   * every refresh rather than incrementing.
    */
-  refresh(id: string): BatchRecord | null {
+  refresh(id: string, counts: { total: number; completed: number; failed: number; cancelled: number; active: number }): BatchRecord | null {
     return transaction(db => {
-      const row = db
-        .prepare(
-          `SELECT
-             COUNT(*) AS total,
-             SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
-             SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END) AS failed,
-             SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled,
-             SUM(CASE WHEN status IN ('pending','claimed','running') THEN 1 ELSE 0 END) AS active
-           FROM jobs WHERE batch_id = ?`
-        )
-        .get(id) as any
-
-      const total = row?.total ?? 0
-      const completed = row?.completed ?? 0
-      const failed = row?.failed ?? 0
-      const cancelled = row?.cancelled ?? 0
-      const active = row?.active ?? 0
+      const { total, completed, failed, cancelled, active } = counts
 
       const current = db.prepare('SELECT status FROM batches WHERE id = ?').get(id) as any
       let status: BatchStatus = current?.status ?? 'queued'

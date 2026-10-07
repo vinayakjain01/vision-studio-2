@@ -22,6 +22,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { config } from '@/config'
 import { resolveSession } from '@/auth/session'
 import { runWithTenant } from '@/tenancy/context'
+import { QuotaExceededError } from '@/jobs/quota'
+import { AiExtendQuotaExceededError } from '@/jobs/ai-extend-dispatcher'
 
 export function ok<T>(data: T, init?: ResponseInit): NextResponse {
   return NextResponse.json(data as any, init)
@@ -125,6 +127,24 @@ export function handler<Args extends unknown[]>(
 
       return await runWithTenant(resolved.tenant, () => fn(...args))
     } catch (err) {
+      // Structured quota errors (code + limit + current usage) get their own
+      // response shape — a stable `code` lets the UI render "12/20 uploads"
+      // (P4) instead of pattern-matching the message string, and 429 is the
+      // honest status: the request is valid, the caller is just over a
+      // limit right now.
+      if (err instanceof QuotaExceededError) {
+        return NextResponse.json(
+          { error: err.message, code: err.code, limit: err.limit, current: err.current },
+          { status: 429 }
+        )
+      }
+      if (err instanceof AiExtendQuotaExceededError) {
+        return NextResponse.json(
+          { error: err.message, code: 'ai_extend_quota', limit: err.limit, current: err.current },
+          { status: 429 }
+        )
+      }
+
       const message = err instanceof Error ? err.message : String(err)
       console.error('[api]', err)
       return serverError(message)

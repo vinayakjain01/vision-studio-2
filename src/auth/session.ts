@@ -29,6 +29,9 @@ function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex')
 }
 
+/** See `resolveSession`'s sliding-expiry debounce. */
+const SESSION_TOUCH_DEBOUNCE_MS = 60_000
+
 export interface ResolvedSession {
   sessionId: string
   userId: string
@@ -60,8 +63,19 @@ export function resolveSession(token: string | undefined | null): ResolvedSessio
 
   const membership = memberships.findForUser(user.id)
 
-  const newExpiresAt = new Date(Date.now() + config.auth.sessionTtlMs).toISOString()
-  sessions.touch(session.id, newExpiresAt)
+  // Debounced: every authenticated request (every page view, every API call)
+  // reaches this function, and a plain WAL-mode UPDATE still needs
+  // control.db's single writer lock — a busy session polling or navigating
+  // several times a second would otherwise make that file write-hot for no
+  // behavioural benefit (a session due to expire in 30 days does not
+  // meaningfully care whether its last-touch is one second or one minute
+  // stale). Skipping the write when the LAST update was recent enough keeps
+  // the effective sliding window, just rounded to this granularity.
+  const msSinceLastSeen = Date.now() - new Date(session.lastSeenAt).getTime()
+  if (msSinceLastSeen > SESSION_TOUCH_DEBOUNCE_MS) {
+    const newExpiresAt = new Date(Date.now() + config.auth.sessionTtlMs).toISOString()
+    sessions.touch(session.id, newExpiresAt)
+  }
 
   return {
     sessionId: session.id,

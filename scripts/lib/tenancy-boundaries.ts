@@ -65,14 +65,13 @@ const ALLOWED = [
   'src/config.ts',
   'src/tenancy/context.ts',
   'src/tenancy/page-context.ts',
-  // The worker pool and job queue are untouched in this phase (P3 scope) —
-  // their existing, already-reviewed direct access stays allowed as-is.
+  // The job queue/worker pool's own data-access layer — reviewed as part of
+  // P3's global-queue migration.
   'src/jobs/queue.ts',
   'src/jobs/runner.ts',
   'src/jobs/pool.ts',
   'src/jobs/worker.ts',
   'src/jobs/worker-entry.ts',
-  'src/jobs/default-tenant.ts',
   // Maintenance scripts with no request to derive a tenant from — see each
   // file's own doc comment for why it uses openTenantDbById explicitly.
   'scripts/clear-queue.ts',

@@ -26,6 +26,16 @@
  * session spawns roughly one thread per core, so a handful of workers becomes
  * a hundred native threads fighting over twelve cores and throughput collapses.
  *
+ * ── Per-job tenant binding (P3) ──────────────────────────────────────────────
+ * This pool is a singleton living in the WEB process, but it holds NO tenant
+ * context of its own (the P1/P2 bridge, `withDefaultTenant`/
+ * `resolveDefaultTenantId`, is gone — see the deleted
+ * src/jobs/default-tenant.ts). `start()`'s own `reclaimStale()` call and the
+ * sweeper are genuinely cross-tenant and need none; `refreshBatch` below binds
+ * whichever tenant the job:done/job:failed IPC message actually reported,
+ * since control.db's jobs table (where claiming happens) has no notion of
+ * "the" tenant the way a single-tenant queue used to.
+ *
  * Server-only.
  */
 
@@ -36,7 +46,6 @@ import { config } from '@/config'
 import * as queue from './queue'
 import { batches } from '@/db/repositories'
 import { runWithTenant } from '@/tenancy/context'
-import { resolveDefaultTenantId } from './default-tenant'
 import type { JobKind } from '@/db/types'
 import type { WorkerMessage } from './worker-entry'
 
@@ -48,29 +57,27 @@ export interface PoolStatus {
   startedAt: string | null
 }
 
+interface CurrentJob {
+  jobId: string
+  kind: JobKind
+  tenantId: string
+  startedAt: number
+}
+
 interface WorkerHandle {
   id: string
   kinds: JobKind[]
   child: ChildProcess
   state: 'starting' | 'idle' | 'busy' | 'stopped'
   restarts: number
+  currentJob: CurrentJob | null
 }
 
 /** A worker that crashes this many times is not respawned again. */
 const MAX_RESTARTS = 5
 
-/**
- * This pool is a singleton living in the WEB process (started via
- * `ensurePoolRunning()`, called from inside an already-tenant-scoped API
- * route). But `start()`'s own `reclaimStale()` call, the 60s sweeper, and
- * `refreshBatch()` (triggered later by an IPC message from a child worker)
- * all run detached from any specific request's `TenantContext` — so each
- * needs its own binding. Same P1 bridge as the worker processes themselves;
- * see `src/jobs/default-tenant.ts`.
- */
-function withDefaultTenant<T>(fn: () => T): T {
-  return runWithTenant({ tenantId: resolveDefaultTenantId(), userId: 'system', role: 'owner' }, fn)
-}
+/** How often the watchdog checks for a job that's exceeded its kind's max runtime — tighter than the 60s stale-claim sweep, since a hung job should be caught close to its actual threshold, not up to a minute late. */
+const WATCHDOG_INTERVAL_MS = 10_000
 
 class WorkerPool {
   private handles: WorkerHandle[] = []
@@ -79,6 +86,7 @@ class WorkerPool {
   private completed = 0
   private failed = 0
   private sweeper: NodeJS.Timeout | null = null
+  private watchdog: NodeJS.Timeout | null = null
 
   isRunning(): boolean {
     return this.started
@@ -90,11 +98,13 @@ class WorkerPool {
     this.startedAt = new Date().toISOString()
 
     // A previous run may have died mid-job. Return anything abandoned to the
-    // queue before workers start competing for it.
-    const reclaimed = withDefaultTenant(() => queue.reclaimStale())
+    // queue before workers start competing for it. Global — every tenant's
+    // stale claims, not just one.
+    const reclaimed = queue.reclaimStale()
     if (reclaimed > 0) {
       console.log(`[pool] reclaimed ${reclaimed} stale job(s) from a previous run`)
     }
+    queue.reconcileRunningJobs()
 
     const visionSlots = config.jobs.visionConcurrency
     const renderSlots = config.jobs.renderConcurrency
@@ -129,21 +139,64 @@ class WorkerPool {
     // instead of paying all of it in the same second.
     void this.spawnStaggered(plan)
 
-    // Safety net for a worker that dies without reporting.
+    // Safety net for a worker that dies without reporting, plus the periodic
+    // scheduler reconciliation the design note calls for.
     this.sweeper = setInterval(() => {
       try {
-        withDefaultTenant(() => queue.reclaimStale())
+        queue.reclaimStale()
+        queue.reconcileRunningJobs()
+        queue.promoteAgedBulkJobs()
       } catch {
         // Transient lock contention; the next sweep covers it.
       }
     }, 60_000)
     this.sweeper.unref?.()
 
+    this.watchdog = setInterval(() => this.checkWatchdog(), WATCHDOG_INTERVAL_MS)
+    this.watchdog.unref?.()
+
     console.log(
       `[pool] starting — ${visionSlots} vision worker(s), ${renderSlots} render worker(s), ` +
       `${backgroundFillSlots} background-fill worker(s), ` +
       `${config.vision.ortThreads} ORT thread(s) each, staggered`
     )
+  }
+
+  /**
+   * A job whose 'running' status has outlived its kind's configured max
+   * runtime is presumed hung — not merely slow (see `config.jobs.maxRuntimeMs`'s
+   * doc comment on why `background_fill`'s wait-for-dependency pattern never
+   * triggers this). The worker holding it is killed and respawned, and the
+   * job is explicitly failed (counting an attempt) rather than left for the
+   * much-slower stale-claim sweep to eventually notice via a missed
+   * heartbeat — the worker is still alive and heartbeating just fine; it is
+   * the JOB that is stuck, e.g. in a native call with no cooperative
+   * cancellation point.
+   */
+  private checkWatchdog(): void {
+    const now = Date.now()
+    for (const handle of this.handles) {
+      const job = handle.currentJob
+      if (!job) continue
+
+      const maxRuntimeMs = config.jobs.maxRuntimeMs[job.kind]
+      if (now - job.startedAt <= maxRuntimeMs) continue
+
+      console.warn(
+        `[pool] worker ${handle.id} job ${job.jobId} (${job.kind}) exceeded ${maxRuntimeMs}ms — killing and respawning`
+      )
+
+      try {
+        queue.fail(job.jobId, handle.id, `watchdog: exceeded max runtime (${maxRuntimeMs}ms) for kind '${job.kind}'`)
+      } catch (err) {
+        console.warn(`[pool] watchdog fail() call errored for job ${job.jobId}:`, (err as Error).message)
+      }
+
+      handle.currentJob = null
+      // The 'exit' handler's existing crash-recovery path (below) respawns
+      // this slot the same way a native crash would.
+      handle.child.kill('SIGKILL')
+    }
   }
 
   private async spawnStaggered(plan: { id: string; kinds: JobKind[] }[]): Promise<void> {
@@ -223,26 +276,38 @@ class WorkerPool {
       }
     }
 
-    const handle: WorkerHandle = { id, kinds, child, state: 'starting', restarts }
+    const handle: WorkerHandle = { id, kinds, child, state: 'starting', restarts, currentJob: null }
 
     child.on('message', (message: WorkerMessage) => {
       switch (message.type) {
         case 'ready':
         case 'idle':
           handle.state = 'idle'
+          handle.currentJob = null
+          break
+        case 'job:started':
+          handle.state = 'busy'
+          handle.currentJob = {
+            jobId: message.jobId,
+            kind: message.kind,
+            tenantId: message.tenantId,
+            startedAt: new Date(message.startedAt).getTime(),
+          }
           break
         case 'job:done':
           handle.state = 'busy'
+          handle.currentJob = null
           this.completed++
-          if (message.batchId) this.refreshBatch(message.batchId)
+          if (message.batchId) this.refreshBatch(message.tenantId, message.batchId)
           break
         case 'job:failed':
           handle.state = 'busy'
+          handle.currentJob = null
           if (!message.retrying) this.failed++
           console.warn(
             `[pool] job ${message.jobId} failed${message.retrying ? ' (will retry)' : ''}: ${message.error}`
           )
-          if (message.batchId) this.refreshBatch(message.batchId)
+          if (message.batchId) this.refreshBatch(message.tenantId, message.batchId)
           break
       }
     })
@@ -254,11 +319,13 @@ class WorkerPool {
 
     child.on('exit', (code, signal) => {
       handle.state = 'stopped'
+      handle.currentJob = null
       if (!this.started) return
 
       // A clean exit means we asked it to stop. Anything else is a crash — a
-      // native fault in ONNX, sharp or skia — and the job it held is recovered
-      // by the stale sweep.
+      // native fault in ONNX, sharp or skia, or the watchdog killing a hung
+      // job — and the job it held is recovered by the stale sweep (or was
+      // already explicitly failed by the watchdog before the kill).
       if (code === 0 && !signal) return
 
       console.warn(
@@ -288,9 +355,11 @@ class WorkerPool {
     return handle
   }
 
-  private refreshBatch(batchId: string): void {
+  private refreshBatch(tenantId: string, batchId: string): void {
     try {
-      withDefaultTenant(() => batches.refresh(batchId))
+      runWithTenant({ tenantId, userId: 'system', role: 'owner' }, () => {
+        batches.refresh(batchId, queue.batchJobCounts(tenantId, batchId))
+      })
     } catch (err) {
       console.warn(`[pool] batch refresh failed for ${batchId}:`, (err as Error).message)
     }
@@ -318,6 +387,10 @@ class WorkerPool {
     if (this.sweeper) {
       clearInterval(this.sweeper)
       this.sweeper = null
+    }
+    if (this.watchdog) {
+      clearInterval(this.watchdog)
+      this.watchdog = null
     }
 
     for (const handle of this.handles) {

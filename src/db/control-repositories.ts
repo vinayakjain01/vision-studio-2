@@ -112,30 +112,29 @@ function toTenant(row: any): TenantRecord {
 
 export const tenants = {
   /**
-   * Creates the tenant AND its default quota row in one transaction — a
-   * tenant with no quota row is a bug waiting to happen once P3 starts
-   * enforcing them.
+   * Creates the tenant AND its default quota/scheduler-state rows in one
+   * transaction — a tenant with no quota row is a bug waiting to happen, and
+   * every tenant needs a `tenant_queue_state` row before it can ever have a
+   * job claimed fairly.
    *
    * Refuses to create a SECOND tenant unless `ALLOW_MULTI_TENANT_PREVIEW=1`
-   * is set. The worker pool and job queue are still single-tenant until P3
-   * (see docs/MULTI_TENANCY.md §3.3) — bound at startup to whichever one
-   * tenant `resolveDefaultTenantId()` finds, and it refuses to run at all
-   * once a second exists. Letting a second tenant get created here anyway
-   * would silently run every tenant's jobs against the first one's data
-   * instead, which is a correctness bug, not a missing feature. This is
-   * the one place that guarantee can be enforced regardless of which
-   * script or route ends up calling it.
+   * is set. This is no longer an architectural limitation — as of P3 the
+   * worker pool binds tenant context per JOB (see src/jobs/worker-entry.ts)
+   * and the scheduler fair-shares across tenants by construction, so nothing
+   * here would behave incorrectly with a second real tenant. The guard stays
+   * in place anyway because that's what was asked for after P2 shipped:
+   * multi-tenant operation should be turned on deliberately, not as a side
+   * effect of whoever next runs the legacy-migration script, so it remains
+   * an explicit opt-in until that instruction is lifted.
    */
   create(name: string, db: Db = getControlDb()): TenantRecord {
     if (!config.auth.allowMultiTenantPreview) {
       const existing = db.prepare('SELECT COUNT(*) AS c FROM tenants').get() as { c: number }
       if (existing.c > 0) {
         throw new Error(
-          'Refusing to create a second tenant: the worker pool and job queue are still ' +
-            'single-tenant until P3 (see docs/MULTI_TENANCY.md §3.3) and would run every ' +
-            "tenant's jobs against whichever one resolveDefaultTenantId() picks. Set " +
-            'ALLOW_MULTI_TENANT_PREVIEW=1 only if you understand this is a data/auth-layer ' +
-            'preview, not a supported multi-tenant deployment.'
+          'Refusing to create a second tenant: multi-tenant operation is implemented (P3) but ' +
+            'stays behind an explicit opt-in until turned on deliberately. Set ' +
+            'ALLOW_MULTI_TENANT_PREVIEW=1 to create additional tenants.'
         )
       }
     }
@@ -147,6 +146,17 @@ export const tenants = {
         .prepare('INSERT INTO tenants (id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
         .run(id, name, 'active', now, now)
       conn.prepare('INSERT INTO quotas (tenant_id) VALUES (?)').run(id)
+      // `tenant_queue_state.weight` starts as a copy of `quotas.weight`
+      // (both default 1.0) rather than one column serving both roles: the
+      // scheduler's claim query reads this row on every claim and must never
+      // block on or join against `quotas` (an admin-editable table a request
+      // handler could be writing to concurrently) — see
+      // docs/MULTI_TENANCY.md §3.2. An admin changing `quotas.weight` later
+      // re-syncs this copy explicitly (`tenantQueueState.setWeight`), the
+      // same deliberate-copy pattern `images.vision_status` already uses as
+      // a denormalised mirror of `vision_analyses.status`.
+      conn.prepare('INSERT INTO tenant_queue_state (tenant_id, weight, running_jobs) VALUES (?, 1.0, 0)').run(id)
+      conn.prepare('INSERT INTO ai_extend_tenant_state (tenant_id, in_flight) VALUES (?, 0)').run(id)
       return toTenant(conn.prepare('SELECT * FROM tenants WHERE id = ?').get(id))
     })
   },
@@ -332,5 +342,180 @@ export const auditLog = {
         entry.detail != null ? JSON.stringify(entry.detail) : null,
         nowIso()
       )
+  },
+}
+
+// ─── Quotas ─────────────────────────────────────────────────────────────────
+
+export interface QuotaRecord {
+  tenantId: string
+  maxQueuedJobs: number
+  maxImagesPerBatch: number
+  maxConcurrentUploads: number
+  maxStorageBytes: number
+  maxAiExtendPerMonth: number
+  weight: number
+}
+
+function toQuota(row: any): QuotaRecord {
+  return {
+    tenantId: row.tenant_id,
+    maxQueuedJobs: row.max_queued_jobs,
+    maxImagesPerBatch: row.max_images_per_batch,
+    maxConcurrentUploads: row.max_concurrent_uploads,
+    maxStorageBytes: row.max_storage_bytes,
+    maxAiExtendPerMonth: row.max_ai_extend_per_month,
+    weight: row.weight,
+  }
+}
+
+export const quotas = {
+  get(tenantId: string): QuotaRecord | null {
+    const row = getControlDb().prepare('SELECT * FROM quotas WHERE tenant_id = ?').get(tenantId)
+    return row ? toQuota(row) : null
+  },
+
+  /**
+   * Every tenant gets a `quotas` row in the same transaction `tenants.create`
+   * inserts the tenant itself — this should never be missing. Throwing
+   * rather than silently applying hardcoded defaults means a broken
+   * invariant surfaces immediately as an error, not as a quota check that
+   * quietly stopped enforcing anything.
+   */
+  getOrThrow(tenantId: string): QuotaRecord {
+    const quota = this.get(tenantId)
+    if (!quota) {
+      throw new Error(`no quotas row for tenant ${tenantId} — tenants.create() should have inserted one`)
+    }
+    return quota
+  },
+
+  setWeight(tenantId: string, weight: number): void {
+    getControlDb().prepare('UPDATE quotas SET weight = ? WHERE tenant_id = ?').run(weight, tenantId)
+  },
+}
+
+// ─── Scheduler fair-share state ─────────────────────────────────────────────
+
+export interface TenantQueueStateRecord {
+  tenantId: string
+  weight: number
+  runningJobs: number
+}
+
+function toQueueState(row: any): TenantQueueStateRecord {
+  return { tenantId: row.tenant_id, weight: row.weight, runningJobs: row.running_jobs }
+}
+
+export const tenantQueueState = {
+  get(tenantId: string): TenantQueueStateRecord | null {
+    const row = getControlDb().prepare('SELECT * FROM tenant_queue_state WHERE tenant_id = ?').get(tenantId)
+    return row ? toQueueState(row) : null
+  },
+
+  /** Every tenant's row, in no particular order — the claim query's own candidate iteration (src/jobs/queue.ts) is what orders by fairness. */
+  listAll(): TenantQueueStateRecord[] {
+    return getControlDb().prepare('SELECT * FROM tenant_queue_state').all().map(toQueueState)
+  },
+
+  /** Re-syncs the scheduler's working copy when an admin edits `quotas.weight` — see the column's doc comment in control-schema.sql for why they're two columns. */
+  setWeight(tenantId: string, weight: number): void {
+    getControlDb().prepare('UPDATE tenant_queue_state SET weight = ? WHERE tenant_id = ?').run(weight, tenantId)
+  },
+}
+
+// ─── Usage counters (monthly, metered) ──────────────────────────────────────
+
+export interface UsageCounter {
+  tenantId: string
+  period: string
+  aiExtendCalls: number
+  storageBytes: number
+}
+
+function toUsage(tenantId: string, period: string, row: any): UsageCounter {
+  return {
+    tenantId,
+    period,
+    aiExtendCalls: row?.ai_extend_calls ?? 0,
+    storageBytes: row?.storage_bytes ?? 0,
+  }
+}
+
+/** 'YYYY-MM' in UTC — the one place "what period is it" is computed, so every caller agrees on the boundary. */
+export function currentPeriod(): string {
+  return new Date().toISOString().slice(0, 7)
+}
+
+export const usageCounters = {
+  get(tenantId: string, period: string = currentPeriod()): UsageCounter {
+    const row = getControlDb()
+      .prepare('SELECT * FROM usage_counters WHERE tenant_id = ? AND period = ?')
+      .get(tenantId, period)
+    return toUsage(tenantId, period, row)
+  },
+
+  /**
+   * Atomically bumps this month's AI Extend call count and returns the new
+   * total. Called ONLY after a successful generation (never before, never on
+   * a retry attempt that didn't complete) — see
+   * src/jobs/ai-extend-dispatcher.ts — since this is what the tenant is
+   * billed against downstream, not a request-attempt counter.
+   */
+  incrementAiExtendCalls(tenantId: string, period: string = currentPeriod()): number {
+    const db = getControlDb()
+    const now = nowIso()
+    db.prepare(
+      `INSERT INTO usage_counters (tenant_id, period, ai_extend_calls, storage_bytes, updated_at)
+       VALUES (?, ?, 1, 0, ?)
+       ON CONFLICT (tenant_id, period) DO UPDATE SET
+         ai_extend_calls = ai_extend_calls + 1, updated_at = excluded.updated_at`
+    ).run(tenantId, period, now)
+    return (
+      db.prepare('SELECT ai_extend_calls FROM usage_counters WHERE tenant_id = ? AND period = ?')
+        .get(tenantId, period) as { ai_extend_calls: number }
+    ).ai_extend_calls
+  },
+
+  /**
+   * Incremental update to the storage gauge — a negative delta on delete.
+   * Drifts over time against reality (a crash between a file write and this
+   * call, a bulk directory delete that doesn't call this at all — see
+   * media-store.ts's `deleteDirectory`/`deleteDerivedTree`), which is why a
+   * periodic reconciliation scan (`reconcileStorageUsage` in media-store.ts)
+   * exists to correct it from an actual disk scan rather than this counter
+   * being treated as authoritative forever.
+   */
+  incrementStorageBytes(tenantId: string, deltaBytes: number, period: string = currentPeriod()): void {
+    const now = nowIso()
+    getControlDb()
+      .prepare(
+        `INSERT INTO usage_counters (tenant_id, period, ai_extend_calls, storage_bytes, updated_at)
+         VALUES (?, ?, 0, MAX(0, ?), ?)
+         ON CONFLICT (tenant_id, period) DO UPDATE SET
+           storage_bytes = MAX(0, storage_bytes + ?), updated_at = excluded.updated_at`
+      )
+      .run(tenantId, period, deltaBytes, now, deltaBytes)
+  },
+
+  /** Point-in-time gauge, overwritten rather than accumulated — see the column's doc comment in control-schema.sql. */
+  setStorageBytes(tenantId: string, bytes: number, period: string = currentPeriod()): void {
+    const now = nowIso()
+    getControlDb()
+      .prepare(
+        `INSERT INTO usage_counters (tenant_id, period, ai_extend_calls, storage_bytes, updated_at)
+         VALUES (?, ?, 0, ?, ?)
+         ON CONFLICT (tenant_id, period) DO UPDATE SET
+           storage_bytes = excluded.storage_bytes, updated_at = excluded.updated_at`
+      )
+      .run(tenantId, period, bytes, now)
+  },
+
+  /** Sum across every tenant for the period — what the global circuit breaker (AI_EXTEND_GLOBAL_MONTHLY_CAP) actually reads. */
+  globalAiExtendCalls(period: string = currentPeriod()): number {
+    const row = getControlDb()
+      .prepare('SELECT COALESCE(SUM(ai_extend_calls), 0) AS total FROM usage_counters WHERE period = ?')
+      .get(period) as { total: number }
+    return row.total
   },
 }

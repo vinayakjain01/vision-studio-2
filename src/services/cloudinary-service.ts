@@ -47,13 +47,17 @@ export class CloudinaryServiceError extends Error {
   constructor(
     message: string,
     /**
-     * Distinguishes failures that need different handling: `rate_limited`
-     * and `busy` are worth retrying shortly, `credits` and `auth` are not
-     * (they need a human), and retrying them just burns attempts against a
-     * condition no retry can change.
+     * Distinguishes failures that need different handling: `rate_limited`,
+     * `server_error`, and `timeout`/`unreachable` are worth retrying — a
+     * property of the moment, not the request — while `credits`, `auth` and
+     * `rejected` are not (they need a human, or retrying can never produce a
+     * different answer for the same input). See src/jobs/ai-extend-
+     * dispatcher.ts's RETRYABLE set, which this maps onto directly.
      */
-    readonly kind: 'auth' | 'credits' | 'rate_limited' | 'timeout' | 'unreachable' | 'rejected' =
-      'rejected'
+    readonly kind: 'auth' | 'credits' | 'rate_limited' | 'server_error' | 'timeout' | 'unreachable' | 'rejected' =
+      'rejected',
+    /** Present only for `rate_limited` when Cloudinary sent a `Retry-After` header — honored by the dispatcher instead of its own default backoff. */
+    readonly retryAfterMs?: number
   ) {
     super(message)
     this.name = 'CloudinaryServiceError'
@@ -194,6 +198,17 @@ export interface GenerativeFillResult {
   bytes: Buffer
   width: number
   height: number
+}
+
+/**
+ * What src/jobs/ai-extend-dispatcher.ts actually depends on — a single
+ * method, so a future provider swap (or a test double) is a different object
+ * satisfying this shape, never a change to the dispatcher itself. Cloudinary
+ * is the only implementation today (`cloudinaryProvider`, below); credentials
+ * stay global either way (§3.4).
+ */
+export interface GenerativeFillProvider {
+  generativeFill(request: GenerativeFillRequest): Promise<GenerativeFillResult>
 }
 
 /**
@@ -339,7 +354,7 @@ export async function generativeFill(
     // Cloudinary reports the real reason in this header rather than the body
     // for transformation errors, and the body is usually a placeholder GIF.
     const detail = response.headers.get('x-cld-error') ?? (await response.text().catch(() => ''))
-    throw classifyHttp(response.status, detail)
+    throw classifyHttp(response.status, detail, response.headers.get('retry-after'))
   }
 
   const bytes = Buffer.from(await response.arrayBuffer())
@@ -408,7 +423,17 @@ async function assertUsableImage(
   }
 }
 
-function classifyHttp(status: number, detail: string): CloudinaryServiceError {
+/** `Retry-After` is either a number of seconds or an HTTP date — both are valid per RFC 9110 §10.2.3. */
+function parseRetryAfterMs(header: string | null): number | undefined {
+  if (!header) return undefined
+  const seconds = Number(header)
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000
+  const when = Date.parse(header)
+  if (!Number.isNaN(when)) return Math.max(0, when - Date.now())
+  return undefined
+}
+
+function classifyHttp(status: number, detail: string, retryAfterHeader: string | null = null): CloudinaryServiceError {
   const text = detail.slice(0, 400)
   if (status === 401 || status === 403) {
     return new CloudinaryServiceError(
@@ -420,7 +445,8 @@ function classifyHttp(status: number, detail: string): CloudinaryServiceError {
   if (status === 420 || status === 429) {
     return new CloudinaryServiceError(
       `Cloudinary rate-limited this request (${status}): ${text}`,
-      'rate_limited'
+      'rate_limited',
+      parseRetryAfterMs(retryAfterHeader)
     )
   }
   if (/credit|quota|limit reached|usage/i.test(text)) {
@@ -428,6 +454,9 @@ function classifyHttp(status: number, detail: string): CloudinaryServiceError {
       `Cloudinary reports the account is out of generative credits or over quota: ${text}`,
       'credits'
     )
+  }
+  if (status >= 500) {
+    return new CloudinaryServiceError(`Cloudinary returned a server error (${status}): ${text}`, 'server_error')
   }
   return new CloudinaryServiceError(`Cloudinary returned ${status}: ${text}`, 'rejected')
 }
@@ -463,3 +492,6 @@ export function looksLikeCompleteJpeg(bytes: Buffer): boolean {
     bytes[bytes.length - 1] === 0xd9
   )
 }
+
+/** The `GenerativeFillProvider` the dispatcher uses by default. */
+export const cloudinaryProvider: GenerativeFillProvider = { generativeFill }

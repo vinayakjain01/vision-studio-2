@@ -20,6 +20,8 @@ import { imports, images, products, visionAnalyses } from '@/db/repositories'
 import { transaction } from '@/db/client'
 import { enqueue } from '@/jobs/queue'
 import { ensurePoolRunning } from '@/jobs/pool'
+import { assertCanEnqueue } from '@/jobs/quota'
+import { currentTenant } from '@/tenancy/context'
 import { ENGINE_VERSION } from '@/vision/model-registry'
 import {
   classifyFile,
@@ -132,9 +134,25 @@ export async function ingestFiles(
   imports.bump(importId, { imported, skipped, failed, duplicate: duplicates }, 'importing')
 
   if (toQueue.length > 0) {
+    const tenantId = currentTenant().tenantId
+    // Files are already stored and their DB rows already created by this
+    // point — a quota that blocks QUEUEING analysis must not undo or fail
+    // that. Images simply stay at their current vision_status (queueable
+    // again later, manually or via the next import) rather than the whole
+    // upload response failing for a problem that has nothing to do with
+    // whether the files themselves were valid.
+    try {
+      assertCanEnqueue(tenantId, toQueue.length)
+    } catch (err) {
+      console.warn(`[import] vision analysis not queued for ${importId}: ${(err as Error).message}`)
+      return results
+    }
     enqueue(
+      tenantId,
       toQueue.map(item => ({
         kind: 'vision' as const,
+        // Import analysis is the canonical 'bulk' case.
+        priorityClass: 'bulk' as const,
         payload: {
           imageId: item.imageId,
           sourceHash: item.sourceHash,
@@ -284,11 +302,16 @@ export function reanalyzeImport(importId: string, force = false): number {
 
   if (pending.length === 0) return 0
 
+  const tenantId = currentTenant().tenantId
+  assertCanEnqueue(tenantId, pending.length)
+
   for (const image of pending) images.setVisionStatus(image.id, 'pending')
 
   const { inserted } = enqueue(
+    tenantId,
     pending.map(image => ({
       kind: 'vision' as const,
+      priorityClass: 'bulk' as const,
       payload: {
         imageId: image.id,
         sourceHash: image.sourceHash,
@@ -313,9 +336,14 @@ export function reanalyzeAllPending(): number {
   ]
   if (pending.length === 0) return 0
 
+  const tenantId = currentTenant().tenantId
+  assertCanEnqueue(tenantId, pending.length)
+
   const { inserted } = enqueue(
+    tenantId,
     pending.map(image => ({
       kind: 'vision' as const,
+      priorityClass: 'bulk' as const,
       payload: {
         imageId: image.id,
         sourceHash: image.sourceHash,
