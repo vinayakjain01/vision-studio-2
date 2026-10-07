@@ -23,6 +23,7 @@
  * before this module existed.
  */
 
+import '@/lib/sharp-cache'
 import sharp from 'sharp'
 import { config } from '@/config'
 

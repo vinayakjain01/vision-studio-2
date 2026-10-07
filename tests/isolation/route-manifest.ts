@@ -61,6 +61,11 @@ export const ROUTE_MANIFEST: RouteEntry[] = [
     public: true,
     note: 'must clear the cookie even for an already-expired/foreign session (see middleware.ts PUBLIC_PATHS comment)',
   },
+  {
+    routePath: '/api/auth/change-password',
+    methods: ['POST'],
+    note: 'operates only on the CALLING session\'s own user (resolveSession\'s userId), never an id from the request — no cross-tenant/cross-user surface to probe',
+  },
 
   {
     routePath: '/api/products',
@@ -170,7 +175,7 @@ export const ROUTE_MANIFEST: RouteEntry[] = [
   {
     routePath: '/api/vision/status',
     methods: ['GET'],
-    note: 'aggregate model/readiness status, not tenant resource data — only needs the baseline auth-required check',
+    note: 'model/readiness status plus this tenant\'s own queue depth (explicitly tenant-scoped against the global control.db jobs table, P4) — no ID param to probe cross-tenant with, so only needs the baseline auth-required check',
   },
   {
     routePath: '/api/ai-extend/status',

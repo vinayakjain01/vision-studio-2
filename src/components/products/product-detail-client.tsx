@@ -4,6 +4,7 @@ import * as React from 'react'
 import useSWR from 'swr'
 import { AlertTriangle, ImageOff, Loader2 } from 'lucide-react'
 import { fetcher } from '@/lib/api'
+import { jitterMs } from '@/lib/polling'
 import { Alert, Badge, Panel, Spinner, Tabs } from '@/components/ui/primitives'
 import { VisionDebugPanel } from '@/components/vision/vision-debug-panel'
 import { CreativeGallery } from '@/components/products/creative-gallery'
@@ -35,7 +36,7 @@ export function ProductDetailClient({ productId }: { productId: string }) {
   const { data, isLoading, mutate } = useSWR<Response>(`/api/products/${productId}`, fetcher, {
     refreshInterval: latest =>
       latest?.images.some(i => i.visionStatus === 'pending' || i.visionStatus === 'processing')
-        ? 2500
+        ? jitterMs(2500)
         : 0,
   })
 

@@ -15,6 +15,7 @@ import useSWR from 'swr'
 import { toast } from 'sonner'
 import { Download, Loader2, Play } from 'lucide-react'
 import { fetcher, postJson } from '@/lib/api'
+import { jitterMs } from '@/lib/polling'
 import { Button, Panel, PanelHeader, Progress, Select } from '@/components/ui/primitives'
 import type { BatchRecord, TemplateRecord } from '@/db/types'
 import {
@@ -46,12 +47,12 @@ export function ProductGeneratePanel({
   // `onSuccess` fires once per completed fetch, which is the right place to
   // react to "the batch just finished" — unlike an effect watching derived
   // render state, it cannot re-trigger itself by writing the state it reads.
-  const { data: progress } = useSWR<{ batch: BatchRecord }>(
+  const { data: progress } = useSWR<{ batch: BatchRecord; waitingForWorker: boolean }>(
     batchId ? `/api/batches/${batchId}` : null,
     fetcher,
     {
       refreshInterval: latest =>
-        latest?.batch.status === 'running' || latest?.batch.status === 'queued' ? 1200 : 0,
+        latest?.batch.status === 'running' || latest?.batch.status === 'queued' ? jitterMs(1200) : 0,
       onSuccess: latest => {
         const status = latest.batch.status
         if (status === 'completed' || status === 'failed' || status === 'cancelled') {
@@ -152,6 +153,12 @@ export function ProductGeneratePanel({
             {progress.batch.completedJobs}/{progress.batch.totalJobs} done
             {progress.batch.failedJobs > 0 && ` · ${progress.batch.failedJobs} failed`}
           </p>
+          {progress.waitingForWorker && (
+            <p className="flex items-center gap-1.5 text-[11px] text-[var(--color-ink-subtle)]">
+              <Loader2 size={11} className="animate-spin" />
+              Waiting for a free worker…
+            </p>
+          )}
         </div>
       )}
     </Panel>

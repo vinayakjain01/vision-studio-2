@@ -364,3 +364,68 @@ Everything else in this document is either already-confirmed-aligned with
 the spec or an implementation detail within a decision the spec already
 made. Absent objections, P1 (control plane, auth, TenantContext, legacy
 migration) starts from this document as written.
+
+---
+
+## 9. P4 manual QA checklist — two-session smoke test
+
+No browser test harness exists in this repo (no Playwright/Cypress/
+Puppeteer), so the isolation properties the automated suite already checks
+at the HTTP level (`tests/isolation/*`) are worth re-confirming once, by
+hand, the way an actual user would encounter them: two browser sessions
+side by side, logged in as two different tenants.
+
+Run through this after any change touching auth, tenancy context, the job
+queue, or the streaming upload/export paths.
+
+### Setup
+
+1. Two tenants, each with at least one user (`scripts/`'s admin bootstrap or
+   the signup flow, whichever is enabled).
+2. Two browser windows (or one normal + one private/incognito, so cookies
+   don't collide) — **Tenant A** and **Tenant B**.
+
+### Checklist
+
+- [ ] Log in as Tenant A in window 1, Tenant B in window 2. Both land on
+      their own, empty (or pre-existing) workspace — neither sees the
+      other's products, imports, templates, or batches anywhere (sidebar,
+      lists, counts).
+- [ ] In window 1, start a bulk import (10+ photos). While it's analysing,
+      check window 2's Import/Products pages — Tenant B must see **no**
+      change: no new images, no shift in "N analysing" counts, no queue
+      activity implying another tenant's work.
+- [ ] Still mid-import in window 1: open Settings in window 2 (Tenant B).
+      The queue depth shown must be Tenant B's own (likely zero), never
+      Tenant A's in-flight count.
+- [ ] Generate a batch of 20+ creatives in window 1. While it runs, confirm
+      window 2 shows no "waiting for a free worker" message unless Tenant
+      B *also* has pending work of its own — Tenant A's load on the shared
+      worker pool must never surface as Tenant B's own queue state.
+- [ ] Try to open a direct URL in window 2 using one of Tenant A's real
+      resource ids (copy a product/import/batch id from window 1's network
+      tab or address bar, paste into window 2's equivalent URL). Expect a
+      404, never the resource itself.
+- [ ] Download a bulk ZIP from window 1 (20+ creatives) and from window 2
+      concurrently. Both must complete with the correct, respective
+      contents — no mixing, no one blocking the other indefinitely (a
+      slow one may 429/503 briefly under tight quotas; it must not hang).
+- [ ] Upload 50+ files at once in window 1. Mid-upload, close the tab (or
+      navigate away) — reopen Import and confirm no orphaned "stuck"
+      upload state; previously-succeeded files are already imported and
+      not re-required.
+- [ ] In window 1, go to Settings → Account and change the password,
+      **without** logging out first. Confirm: the current tab stays
+      logged in (no redirect to /login), and — if a THIRD window was also
+      logged in as Tenant A's same user — that third window is logged out
+      on its next request.
+- [ ] Trigger a quota error on purpose (e.g. start two large uploads at
+      once past `MAX_CONCURRENT_UPLOADS`, or push past
+      `AI_EXTEND_GLOBAL_MONTHLY_CAP` if configured low for testing).
+      Confirm the UI shows the limit, current usage, and what to do —
+      not just a generic "request failed" message.
+- [ ] Leave both windows idle (tab visible) for a few minutes and watch the
+      Network tab: polling requests should slow down or stop once nothing
+      is in flight, and most should come back `304` once state has
+      settled. Switch a tab to background (another tab in front) and
+      confirm polling pauses entirely while hidden.

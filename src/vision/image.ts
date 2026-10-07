@@ -12,8 +12,23 @@
  * detections land correctly on the raw buffer and 90° wrong on screen.
  */
 
+import '@/lib/sharp-cache'
 import sharp from 'sharp'
+import fsp from 'fs/promises'
 import type { DecodedImage, ProbabilityMask, Size } from './types'
+
+/**
+ * Explicit rather than relying on sharp's own built-in default (currently
+ * also 268,402,689 — 0x3FFF²) so this is a documented, intentional decision
+ * rather than an implicit library behavior that could change between
+ * versions. Rejects a decompression-bomb image (tiny compressed size,
+ * enormous declared dimensions) with a thrown error BEFORE sharp allocates
+ * memory for the decoded pixels, rather than attempting the decode and
+ * risking the process running out of memory. Generous for real studio
+ * photography — comfortably above even a 16k×16k scan — while still a hard
+ * ceiling.
+ */
+const MAX_INPUT_PIXELS = 268_402_689
 
 export interface ImageMetadata {
   width: number
@@ -46,9 +61,20 @@ const MIME_BY_FORMAT: Record<string, string> = {
  * `width`/`height` are post-rotation display dimensions: sharp reports the
  * stored dimensions, so for orientation values 5–8 (the 90°/270° cases) they
  * are swapped here to match what the decoded buffer will actually be.
+ *
+ * Accepts a path as well as a Buffer — the streaming upload path (see
+ * import-service.ts) writes the file to disk while hashing it and never
+ * holds the whole thing in memory as a Buffer at all; reading metadata from
+ * the path lets sharp do the same (libvips streams the header, it doesn't
+ * need the full file resident to report dimensions). `knownByteSize` avoids
+ * a redundant `stat()` when the caller already knows it (exactly the
+ * streaming case, which counted bytes as they arrived).
  */
-export async function readImageMetadata(bytes: Buffer): Promise<ImageMetadata> {
-  const image = sharp(bytes, { failOn: 'none' })
+export async function readImageMetadata(
+  input: Buffer | string,
+  knownByteSize?: number
+): Promise<ImageMetadata> {
+  const image = sharp(input, { failOn: 'none', limitInputPixels: MAX_INPUT_PIXELS })
   const meta = await image.metadata()
 
   const orientation = meta.orientation ?? null
@@ -59,6 +85,9 @@ export async function readImageMetadata(bytes: Buffer): Promise<ImageMetadata> {
 
   const exif = parseExif(meta.exif)
 
+  const byteSize =
+    knownByteSize ?? (typeof input === 'string' ? (await fsp.stat(input)).size : input.byteLength)
+
   return {
     width: rotated ? storedHeight : storedWidth,
     height: rotated ? storedWidth : storedHeight,
@@ -67,7 +96,7 @@ export async function readImageMetadata(bytes: Buffer): Promise<ImageMetadata> {
     hasAlpha: meta.hasAlpha ?? false,
     colorSpace: meta.space ?? null,
     exifOrientation: orientation,
-    byteSize: bytes.byteLength,
+    byteSize,
     capturedAt: exif.capturedAt,
     cameraMake: exif.make,
     cameraModel: exif.model,

@@ -5,6 +5,7 @@ import Link from 'next/link'
 import useSWR from 'swr'
 import { Images, Loader2, Search } from 'lucide-react'
 import { fetcher } from '@/lib/api'
+import { jitterMs } from '@/lib/polling'
 import { DeleteButton } from '@/components/ui/delete-button'
 import { BulkGeneratePanel } from '@/components/products/bulk-generate-panel'
 import { humanize, percent } from '@/lib/utils'
@@ -45,7 +46,7 @@ export function ProductsClient() {
     // Analysis fills in behind the list; refresh while anything is still pending.
     refreshInterval: latest =>
       latest?.products.some(p => p.visionStatus === 'pending' || p.visionStatus === 'processing')
-        ? 4000
+        ? jitterMs(4000)
         : 0,
   })
 

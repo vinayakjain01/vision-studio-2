@@ -51,6 +51,19 @@ function roots(): Record<MediaRoot, string> {
   }
 }
 
+/**
+ * The current tenant's scratch directory — staging uploads before they're
+ * hashed and moved into content-addressed storage, export scratch work.
+ * Exported (unlike `roots()`) because the streaming upload route needs it
+ * directly, before it has a file to resolve a storage KEY for; this is the
+ * one legitimate way to ask "where does this tenant's temp stuff go"
+ * without reaching for `tenantPaths()` directly, which the lint guard
+ * reserves for this module and a short explicit list of others.
+ */
+export function tenantTmpDir(): string {
+  return tenantPaths(currentTenant().tenantId).tmp
+}
+
 /** sha256 of a buffer, lowercase hex. */
 export function hashBytes(bytes: Buffer | Uint8Array): string {
   return crypto.createHash('sha256').update(bytes).digest('hex')
@@ -229,6 +242,56 @@ export async function putOriginal(
   return { hash, key, path: filePath, deduplicated: !written, byteSize }
 }
 
+/**
+ * Same as `putOriginal`, but for a file ALREADY on disk (the streaming
+ * upload path — see import-service.ts — writes to a tenant tmp/ file while
+ * hashing it, never holding the whole thing in memory as a Buffer) and with
+ * the hash already known, so this never re-reads or re-hashes the bytes.
+ * Moves (renames) the temp file into place rather than copying — a single
+ * filesystem metadata operation, not a byte-for-byte copy — except across a
+ * device boundary (EXDEV), where a rename genuinely cannot be atomic and a
+ * copy-then-delete is the only option.
+ *
+ * On a dedup hit (content already stored under this hash), the temp file is
+ * simply discarded — the exact same "write once" property `putOriginal`
+ * has, just without ever creating a redundant second copy to begin with.
+ */
+export async function putOriginalFromFile(
+  tempPath: string,
+  hash: string,
+  mime: string
+): Promise<{ hash: string; key: string; path: string; deduplicated: boolean; byteSize: number }> {
+  const key = originalKey(hash, mime)
+  const target = resolvePath('originals', key)
+
+  const existing = await fsp.stat(target).catch(() => null)
+  if (existing) {
+    await fsp.rm(tempPath, { force: true })
+    return { hash, key, path: target, deduplicated: true, byteSize: existing.size }
+  }
+
+  await fsp.mkdir(path.dirname(target), { recursive: true })
+  const { size: byteSize } = await fsp.stat(tempPath)
+
+  try {
+    await fsp.rename(tempPath, target)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EXDEV') {
+      await fsp.copyFile(tempPath, target)
+      await fsp.rm(tempPath, { force: true })
+    } else {
+      throw err
+    }
+  }
+
+  // Same accounting as writeFileAtomic's non-overwrite path — originals are
+  // what the storage quota is meant to bound; see that function's own
+  // comment on why derived/creative writes aren't tracked here too.
+  usageCounters.incrementStorageBytes(currentTenant().tenantId, byteSize)
+
+  return { hash, key, path: target, deduplicated: false, byteSize }
+}
+
 export async function putDerived(
   hash: string,
   kind: string,
@@ -391,6 +454,44 @@ export async function reconcileStorageUsage(): Promise<number> {
   }
   usageCounters.setStorageBytes(currentTenant().tenantId, total)
   return total
+}
+
+/**
+ * Removes tmp/ files older than `maxAgeMs` for the current tenant — a crash,
+ * a killed request, or a client that disconnects mid-upload all skip the
+ * streaming upload route's own `cleanupAll()` (see
+ * `src/app/api/imports/[importId]/files/route.ts`), which only runs on a
+ * normal catch/finally path within that one request's lifetime. This is the
+ * backstop: anything left behind long enough to no longer plausibly belong
+ * to an in-flight request gets removed regardless of how it was orphaned.
+ * Called both at worker-pool startup (cleans up anything from a previous,
+ * uncleanly-stopped process) and on the same periodic cadence as the other
+ * maintenance sweeps.
+ */
+export async function sweepStaleTmpFiles(maxAgeMs: number): Promise<number> {
+  const dir = tenantTmpDir()
+  let removed = 0
+  let entries: string[]
+  try {
+    entries = await fsp.readdir(dir)
+  } catch {
+    return 0 // tmp/ doesn't exist yet for this tenant — nothing to sweep.
+  }
+
+  const cutoff = Date.now() - maxAgeMs
+  for (const name of entries) {
+    const filePath = path.join(dir, name)
+    try {
+      const stat = await fsp.stat(filePath)
+      if (stat.isFile() && stat.mtimeMs < cutoff) {
+        await fsp.rm(filePath, { force: true })
+        removed++
+      }
+    } catch {
+      // Already gone, or a transient race with the request that owns it — skip it.
+    }
+  }
+  return removed
 }
 
 // ── URLs ─────────────────────────────────────────────────────────────────────

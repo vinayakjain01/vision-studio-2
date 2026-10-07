@@ -42,6 +42,7 @@ import { config } from '@/config'
 import { resolvePath, readMedia, mediaExists } from '@/storage/media-store'
 import { classifyPaddingEdges, type EdgeContent, type MaskGrid } from './boundary-classify'
 import crypto from 'crypto'
+import '@/lib/sharp-cache'
 import sharp from 'sharp'
 
 // ─── Fonts ───────────────────────────────────────────────────────────────────

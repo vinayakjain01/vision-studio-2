@@ -476,6 +476,26 @@ export const images = {
     return row?.n ?? 0
   },
 
+  /**
+   * Same shape as `statusCounts()`, scoped to one import — a grouped COUNT
+   * using `idx_images_import`, not a full row fetch. Used by the import
+   * status endpoint, which SWR polls every couple of seconds while analysis
+   * is in flight; loading and deserializing every image row on each poll
+   * (as `listByImport(importId, 100000).length` would) scales with import
+   * size for no reason when only the per-status counts are ever read.
+   */
+  statusCountsByImport(importId: string): Record<VisionStatus, number> & { total: number } {
+    const rows = getDb()
+      .prepare('SELECT vision_status AS status, COUNT(*) AS n FROM images WHERE import_id = ? GROUP BY vision_status')
+      .all(importId) as any[]
+    const out = { pending: 0, processing: 0, ready: 0, failed: 0, unavailable: 0, total: 0 }
+    for (const row of rows) {
+      out[row.status as VisionStatus] = row.n
+      out.total += row.n
+    }
+    return out
+  },
+
   remove(id: string): void {
     getDb().prepare('DELETE FROM images WHERE id = ?').run(id)
   },

@@ -6,7 +6,7 @@ import { NextRequest } from 'next/server'
 import { products, images } from '@/db/repositories'
 import { getUsableAnalysis } from '@/services/vision-service'
 import { mediaUrl } from '@/storage/media-store'
-import { handler, ok } from '@/lib/api-handler'
+import { handler, okWithEtag } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 
@@ -63,7 +63,7 @@ export const GET = handler(async (request: NextRequest) => {
     }
   })
 
-  return ok({
+  return okWithEtag(request, {
     products: summaries,
     total,
     categories: products.categories(),

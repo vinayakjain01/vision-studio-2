@@ -33,20 +33,37 @@
  * ZIP is already named after the folder, so the folder name never also
  * appears as a path prefix inside it.
  *
- * Streamed rather than buffered. A catalog's worth of 2048px JPEGs is hundreds of
- * megabytes, and holding that in memory to set a Content-Length would risk the
- * server for no benefit.
+ * ── Real streaming (P4) ──────────────────────────────────────────────────────
+ * A previous version's own comment claimed this was "streamed rather than
+ * buffered" — true only of the OUTPUT side. Every input file was fully read,
+ * format-converted, and held as a Buffer for every creative in the archive
+ * BEFORE any bytes were added to the zip (JSZip's `generateInternalStream`
+ * only starts producing output once every `zip.file()` call has already
+ * happened). `archiver` instead gets each entry's bytes just before writing
+ * it, so entries are read/converted and appended ONE SMALL GROUP AT A TIME —
+ * `zipInternalConcurrency` of them in flight at once, each ALSO gated by the
+ * same global/per-tenant export-conversion slots a single-file export uses
+ * (`withExportSlot`) — while output is already flowing to the client. Peak
+ * memory is bounded by that concurrency, not by the archive's total size.
+ * Conversions are processed in ORDER (see `processInOrder` below) even
+ * though several run concurrently, so the archive's entry order — and the
+ * regression test comparing it byte-for-byte against fixed fixtures — stays
+ * deterministic.
  *
  * Compression is disabled deliberately: JPEG is already compressed, so deflate
  * costs CPU proportional to the archive size and saves almost nothing.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import JSZip from 'jszip'
+import { ZipArchive } from 'archiver'
 import { creatives, images, imports, products, templates, batches } from '@/db/repositories'
-import { readMedia } from '@/storage/media-store'
+import { readMedia, statMedia } from '@/storage/media-store'
 import { convertForExport, parseExportOptions } from '@/render/export-image'
+import { withExportSlot } from '@/render/export-concurrency'
+import { currentTenant } from '@/tenancy/context'
+import { config } from '@/config'
 import { handler, badRequest } from '@/lib/api-handler'
+import type { CreativeRecord } from '@/db/types'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 600
@@ -112,12 +129,73 @@ function dedupe(name: string, extension: string, used: Set<string>): string {
   return `${base}-${n}.${extension}`
 }
 
+interface PlannedEntry {
+  creative: CreativeRecord
+  /** Resolved up front, sequentially — naming must stay deterministic and `used`/`singleImportName` bookkeeping is inherently sequential, unlike the actual file read + conversion below. */
+  name: string
+}
+
+interface ConvertedEntry {
+  name: string
+  bytes: Buffer
+}
+
+/**
+ * Runs `worker` over `items` with up to `concurrency` in flight at once, but
+ * YIELDS results strictly in input order — several can finish out of order,
+ * but this holds a completed one back until every earlier item has already
+ * been yielded. That's what keeps the archive's entry order (and so its
+ * exact bytes, for the regression test) identical to a fully sequential run,
+ * while still getting the throughput and bounded-memory benefit of
+ * processing a few at once.
+ */
+async function* processInOrder<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>
+): AsyncGenerator<R> {
+  if (items.length === 0) return
+
+  const results = new Map<number, R>()
+  const inFlight = new Map<number, Promise<void>>()
+  let nextToStart = 0
+  let nextToYield = 0
+
+  const startOne = () => {
+    if (nextToStart >= items.length) return
+    const index = nextToStart++
+    const promise = worker(items[index], index)
+      .then(result => {
+        results.set(index, result)
+      })
+      .finally(() => {
+        inFlight.delete(index)
+      })
+    inFlight.set(index, promise)
+  }
+
+  for (let i = 0; i < concurrency; i++) startOne()
+
+  while (nextToYield < items.length) {
+    if (results.has(nextToYield)) {
+      const result = results.get(nextToYield)!
+      results.delete(nextToYield)
+      nextToYield++
+      startOne()
+      yield result
+    } else {
+      await Promise.race(inFlight.values())
+    }
+  }
+}
+
 export const GET = handler(async (request: NextRequest) => {
   const params = request.nextUrl.searchParams
   const batchId = params.get('batchId')
   const productId = params.get('productId')
   const catalogLayout = params.get('layout') === 'catalog'
   const exportOptions = parseExportOptions(params)
+  const tenantId = currentTenant().tenantId
 
   // A single folder's own download — always its original filenames, flat,
   // same principle as the catalog layout but scoped to one product rather
@@ -136,34 +214,39 @@ export const GET = handler(async (request: NextRequest) => {
   if (list.length === 0) return badRequest('there are no creatives to download')
 
   const templateNames = new Map(templates.list().map(t => [t.id, t.name]))
-  const zip = new JSZip()
-  const used = new Set<string>()
 
-  // Tracked only for the catalog layout: which import(s) the creatives in
-  // this download actually came from, so the zip's own filename can be that
-  // import's name when there is exactly one - and so that same name can be
-  // stripped from every internal path (see catalogPath above) instead of
-  // being duplicated both as the filename and as the archive's own top
-  // folder.
+  // ── Naming pass: sequential, cheap (DB lookups only, no file I/O) ──────────
+  // Must run before any conversion starts: `used`/`singleImportName`/
+  // `sawMultipleImports` are accumulated in list order, and the ZIP's own
+  // filename (built after this loop) depends on having seen every creative.
+  const planned: PlannedEntry[] = []
+  const used = new Set<string>()
   let singleImportName: string | null = null
   let sawMultipleImports = false
 
   for (const creative of list) {
-    let bytes: Buffer
-    try {
-      bytes = await readMedia('creatives', creative.storageKey)
-    } catch {
-      // A creative whose file is missing should not abort the whole download.
-      continue
-    }
+    // Extension isn't known until conversion runs — but every existing
+    // naming rule only needs it as a SUFFIX, and `convertForExport` only
+    // changes the extension when `?format=` was explicitly requested, which
+    // is already known from exportOptions before any file is read. The
+    // default (no format override) always keeps the creative's own stored
+    // extension, so resolving it here — from `creative.mimeType`, same
+    // table `convertForExport`'s own default branch reads — reproduces the
+    // same name conversion would have picked, without needing to convert
+    // first to find out.
+    const extension =
+      exportOptions.format === 'png'
+        ? 'png'
+        : exportOptions.format === 'webp'
+          ? 'webp'
+          : exportOptions.format === 'jpeg'
+            ? 'jpg'
+            : creative.mimeType === 'image/png'
+              ? 'png'
+              : creative.mimeType === 'image/webp'
+                ? 'webp'
+                : 'jpg'
 
-    // A no-op when exportOptions is empty — returns `bytes` as-is and derives
-    // `extension` from the stored mime type exactly as the inline ternary
-    // this replaced did, so a plain `/api/creatives/download` with no export
-    // params produces byte-identical output to before this existed.
-    const exported = await convertForExport(bytes, creative.mimeType, creative.width, exportOptions)
-    bytes = exported.bytes
-    const extension = exported.extension
     let name: string
 
     if (productScoped) {
@@ -196,11 +279,8 @@ export const GET = handler(async (request: NextRequest) => {
 
     name = dedupe(name, extension, used)
     used.add(name)
-
-    zip.file(name, bytes)
+    planned.push({ creative, name })
   }
-
-  if (used.size === 0) return badRequest('none of the creative files could be read')
 
   // Named after the import itself when the download is unambiguously one
   // import's worth of photos - "Men Catalogue.zip", no app name, no batch
@@ -220,28 +300,103 @@ export const GET = handler(async (request: NextRequest) => {
               : 'all-creatives'
         }.zip`
 
-  const stream = zip.generateInternalStream({
-    type: 'uint8array',
-    streamFiles: true,
-    compression: 'STORE',
+  // A cheap existence check (stat, never a read) BEFORE any response is
+  // sent: once streaming starts, the status code and headers are already
+  // committed, so "none of these files exist" has to be caught here or not
+  // at all — unlike the old buffer-everything-first version, which could
+  // inspect the fully-collected result and still choose to return 400.
+  // Entries confirmed missing here are dropped from `planned` so
+  // `fillArchive` never wastes a `readMedia` attempt it already knows will
+  // fail.
+  const existence = await Promise.all(
+    planned.map(entry => statMedia('creatives', entry.creative.storageKey))
+  )
+  const existingPlanned = planned.filter((_, i) => existence[i] !== null)
+  if (existingPlanned.length === 0) return badRequest('none of the creative files could be read')
+
+  const archive = new ZipArchive({ store: true })
+  let aborted = false
+
+  // Runs in the background, writing into `archive` as it goes — the
+  // ReadableStream below starts flowing to the client as soon as the FIRST
+  // entry is appended, not once every entry is ready.
+  const fillArchive = (async () => {
+    let addedAny = false
+
+    for await (const converted of processInOrder<PlannedEntry, ConvertedEntry | null>(
+      existingPlanned,
+      config.render.zipInternalConcurrency,
+      async entry => {
+        if (aborted) return null
+        let bytes: Buffer
+        try {
+          bytes = await readMedia('creatives', entry.creative.storageKey)
+        } catch {
+          // A creative whose file is missing should not abort the whole download.
+          return null
+        }
+        if (aborted) return null
+
+        // A no-op when exportOptions is empty — returns `bytes` as-is,
+        // reproducing byte-identical output to a plain
+        // `/api/creatives/download` with no export params, exactly as
+        // before this file existed.
+        const exported = await withExportSlot(tenantId, () =>
+          convertForExport(bytes, entry.creative.mimeType, entry.creative.width, exportOptions)
+        )
+        return { name: entry.name, bytes: exported.bytes }
+      }
+    )) {
+      if (aborted) break
+      if (!converted) continue
+      archive.append(converted.bytes, { name: converted.name })
+      addedAny = true
+    }
+
+    if (!addedAny) {
+      archive.abort()
+      return
+    }
+    void archive.finalize()
+  })()
+
+  fillArchive.catch(err => {
+    console.error('[creatives/download] archive fill failed:', err)
+    archive.destroy(err instanceof Error ? err : new Error(String(err)))
   })
 
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
-      stream
-        .on('data', (chunk: Uint8Array) => controller.enqueue(chunk))
+      archive
+        .on('data', (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
+        .on('warning', (err: Error) => console.warn('[creatives/download] archiver warning:', err.message))
         .on('error', (err: Error) => controller.error(err))
         .on('end', () => controller.close())
-        .resume()
+    },
+    // Fires when the CLIENT disconnects (tab closed, download cancelled) —
+    // stop converting more files and let `fillArchive`'s loop unwind, which
+    // releases every export-concurrency slot already acquired via
+    // `withExportSlot`'s own try/finally. Nothing here can leak a slot by
+    // continuing to hold it after this point: a conversion already in
+    // flight finishes and releases normally; `aborted` just stops anything
+    // new from starting.
+    cancel() {
+      aborted = true
+      archive.destroy()
     },
   })
 
+  // Will be inaccurate once the first creative is actually found missing on
+  // disk (same caveat the old implementation had — `used.size` there was
+  // also computed from the planning pass, not the final written count).
+  // Kept for continuity with existing callers of this header; not load-
+  // bearing for anything this route itself does.
   return new NextResponse(body, {
     headers: {
       'content-type': 'application/zip',
       'content-disposition': `attachment; filename="${filename}"`,
       'cache-control': 'no-store',
-      'x-creative-count': String(used.size),
+      'x-creative-count': String(existingPlanned.length),
     },
   })
 })

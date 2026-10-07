@@ -33,6 +33,7 @@ import {
   type SkipReason,
 } from '@/import/file-rules'
 import { fetcher, postJson, patchJson } from '@/lib/api'
+import { jitterMs } from '@/lib/polling'
 import { DeleteButton } from '@/components/ui/delete-button'
 import { formatBytes, timeAgo } from '@/lib/utils'
 import {
@@ -179,7 +180,12 @@ export function ImportClient({ recentImports }: { recentImports: ImportRecord[] 
           // retried a couple of times before it counts against the import,
           // rather than failing files a moment's network hiccup would have
           // let through on the next attempt.
-          let response: { ok: boolean; body: any } = { ok: false, body: null }
+          let response: { ok: boolean; status: number; retryAfterMs: number | null; body: any } = {
+            ok: false,
+            status: 0,
+            retryAfterMs: null,
+            body: null,
+          }
           for (let attempt = 1; attempt <= MAX_BATCH_ATTEMPTS; attempt++) {
             const form = new FormData()
             for (const item of batch) {
@@ -195,10 +201,22 @@ export function ImportClient({ recentImports }: { recentImports: ImportRecord[] 
 
             if (response.ok) break
             if (attempt < MAX_BATCH_ATTEMPTS) {
-              toast.error(
-                `${response.body?.error ?? 'A batch failed to upload'} — retrying ` +
-                  `(${attempt}/${MAX_BATCH_ATTEMPTS - 1})`
-              )
+              // A capacity/quota response NAMES how long to wait — honored
+              // exactly rather than retrying immediately into the same
+              // limit. Anything else (a network hiccup, a timeout) retries
+              // right away, same as before.
+              if (response.retryAfterMs != null) {
+                toast.error(
+                  `${response.body?.error ?? 'At capacity'} — retrying in ` +
+                    `${Math.ceil(response.retryAfterMs / 1000)}s (${attempt}/${MAX_BATCH_ATTEMPTS - 1})`
+                )
+                await sleep(response.retryAfterMs)
+              } else {
+                toast.error(
+                  `${response.body?.error ?? 'A batch failed to upload'} — retrying ` +
+                    `(${attempt}/${MAX_BATCH_ATTEMPTS - 1})`
+                )
+              }
             }
           }
 
@@ -464,7 +482,7 @@ function ImportRow({ record, onDeleted }: { record: ImportRecord; onDeleted: () 
   }>(`/api/imports/${record.id}`, fetcher, {
     refreshInterval: latest => {
       const outstanding = (latest?.vision.pending ?? 0) + (latest?.vision.processing ?? 0)
-      return outstanding > 0 ? 2000 : 0
+      return outstanding > 0 ? jitterMs(2000) : 0
     },
   })
 
@@ -572,19 +590,40 @@ function uploadForm(
   url: string,
   form: FormData,
   onProgress: (loadedBytes: number) => void
-): Promise<{ ok: boolean; body: any }> {
+): Promise<{ ok: boolean; status: number; retryAfterMs: number | null; body: any }> {
   return new Promise(resolve => {
     const xhr = new XMLHttpRequest()
     xhr.open('POST', url)
     xhr.responseType = 'json'
     xhr.timeout = UPLOAD_TIMEOUT_MS
     xhr.upload.onprogress = event => onProgress(event.loaded)
-    xhr.onload = () =>
-      resolve({ ok: xhr.status >= 200 && xhr.status < 300, body: xhr.response })
-    xhr.onerror = () => resolve({ ok: false, body: { error: 'Network error during upload' } })
-    xhr.ontimeout = () => resolve({ ok: false, body: { error: 'Upload timed out' } })
+    xhr.onload = () => {
+      // Honored on 429 (quota — e.g. max_concurrent_uploads) and 503 (export/
+      // conversion capacity, which this same endpoint can surface via a
+      // quota check before ingestion). A bare integer is seconds per RFC
+      // 9110 §10.2.3; this app never sends the HTTP-date form.
+      const retryAfterHeader = xhr.getResponseHeader('retry-after')
+      const retryAfterMs =
+        retryAfterHeader && Number.isFinite(Number(retryAfterHeader))
+          ? Number(retryAfterHeader) * 1000
+          : null
+      resolve({
+        ok: xhr.status >= 200 && xhr.status < 300,
+        status: xhr.status,
+        retryAfterMs,
+        body: xhr.response,
+      })
+    }
+    xhr.onerror = () =>
+      resolve({ ok: false, status: 0, retryAfterMs: null, body: { error: 'Network error during upload' } })
+    xhr.ontimeout = () =>
+      resolve({ ok: false, status: 0, retryAfterMs: null, body: { error: 'Upload timed out' } })
     xhr.send(form)
   })
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 /**

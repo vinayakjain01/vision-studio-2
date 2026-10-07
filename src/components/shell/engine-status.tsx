@@ -4,6 +4,7 @@ import useSWR from 'swr'
 import Link from 'next/link'
 import { AlertTriangle, CheckCircle2, Loader2, XCircle } from 'lucide-react'
 import { fetcher } from '@/lib/api'
+import { jitterMs } from '@/lib/polling'
 import { cn } from '@/lib/utils'
 
 interface StatusResponse {
@@ -22,7 +23,7 @@ export function EngineStatusPill() {
         (latest?.queue.vision.running ?? 0) +
         (latest?.queue.render.pending ?? 0) +
         (latest?.queue.render.running ?? 0)
-      return busy > 0 ? 1500 : 20000
+      return busy > 0 ? jitterMs(1500) : jitterMs(20000)
     },
   })
 

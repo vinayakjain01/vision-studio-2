@@ -25,11 +25,11 @@ import { getUsableAnalysis } from './vision-service'
 import { resolveTemplate, type RuleSubject } from '@/rules/resolver'
 import { isShotTypeApplicable, shotTypeUniverse } from '@/framing/solver'
 import * as queue from '@/jobs/queue'
-import { ensurePoolRunning } from '@/jobs/pool'
+import { ensurePoolRunning, getPool } from '@/jobs/pool'
 import { assertCanEnqueue } from '@/jobs/quota'
 import { currentTenant } from '@/tenancy/context'
 import { config } from '@/config'
-import type { BatchRecord, ImageRecord, ProductRecord } from '@/db/types'
+import type { BatchRecord, ImageRecord, JobStatus, ProductRecord } from '@/db/types'
 import type { ShotType } from '@/vision/types'
 
 /**
@@ -371,7 +371,37 @@ export interface BatchProgress {
   /** Estimated seconds remaining. Null until enough jobs have finished to measure. */
   etaSeconds: number | null
   failures: { jobId: string; error: string; imageId: string | null }[]
+  /**
+   * True when this tenant has jobs waiting to run AND every worker in the
+   * (shared, cross-tenant) pool is currently busy — i.e. the wait is real
+   * contention, not merely "nothing has started yet". Deliberately a plain
+   * boolean: the UI may say "waiting for a free worker", never a position
+   * ("3rd in line") or another tenant's counts, which would leak how busy
+   * OTHER tenants are keeping the shared pool.
+   */
+  waitingForWorker: boolean
+  /**
+   * One entry per photo in the batch, collapsed to the four states a user
+   * actually cares about (plus 'cancelled', a real fifth state the cancel
+   * button itself can produce) — 'claimed' folds into 'queued' since from
+   * the outside "a worker just grabbed it" and "still waiting" look the
+   * same. Capped: a batch watched live on a progress screen is normally
+   * small (`INTERACTIVE_BATCH_MAX_JOBS`), so this is for that case, not for
+   * rendering a photo-by-photo view of a 10,000-job bulk run.
+   */
+  photos: { imageId: string; status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled' }[]
 }
+
+const PHOTO_STATUS_MAP: Record<JobStatus, BatchProgress['photos'][number]['status']> = {
+  pending: 'queued',
+  claimed: 'queued',
+  running: 'running',
+  completed: 'done',
+  failed: 'failed',
+  cancelled: 'cancelled',
+}
+
+const MAX_PHOTO_ENTRIES = 500
 
 export function getBatchProgress(batchId: string): BatchProgress | null {
   const tenantId = currentTenant().tenantId
@@ -393,6 +423,10 @@ export function getBatchProgress(batchId: string): BatchProgress | null {
   const finished = stats.completed + stats.failed + stats.cancelled
   const progress = jobs.length > 0 ? finished / jobs.length : 0
 
+  const poolWorkers = getPool().status().workers
+  const waitingForWorker =
+    stats.pending > 0 && poolWorkers.length > 0 && poolWorkers.every(w => w.state === 'busy')
+
   return {
     batch,
     queue: stats,
@@ -406,6 +440,11 @@ export function getBatchProgress(batchId: string): BatchProgress | null {
         error: job.error ?? 'unknown error',
         imageId: (job.payload as any)?.imageId ?? null,
       })),
+    waitingForWorker,
+    photos: jobs.slice(0, MAX_PHOTO_ENTRIES).map(job => ({
+      imageId: (job.payload as any)?.imageId ?? job.id,
+      status: PHOTO_STATUS_MAP[job.status],
+    })),
   }
 }
 
@@ -435,8 +474,19 @@ export function cancelBatch(batchId: string): { cancelled: number } {
   return { cancelled }
 }
 
+/**
+ * Quota-checked: a failed job doesn't count against `maxQueuedJobs` (only
+ * pending/claimed/running do, see `assertCanEnqueue`'s `currentlyQueued`), so
+ * resurrecting a pile of failures back to 'pending' can push a tenant's
+ * live queue over its limit exactly as if they were newly enqueued — this
+ * check is what `queue.retryBatch`'s own UPDATE has no way to enforce on
+ * its own.
+ */
 export function retryBatchFailures(batchId: string): { retried: number } {
   const tenantId = currentTenant().tenantId
+  const { failed } = queue.batchJobCounts(tenantId, batchId)
+  if (failed > 0) assertCanEnqueue(tenantId, failed)
+
   const retried = queue.retryBatch(tenantId, batchId)
   if (retried > 0) {
     batches.setStatus(batchId, 'running')

@@ -6,21 +6,19 @@ import { NextRequest } from 'next/server'
 import { imports, images } from '@/db/repositories'
 import { finalizeImport, reanalyzeImport } from '@/import/import-service'
 import { deleteImport } from '@/services/cleanup-service'
-import { handler, ok, notFound, badRequest } from '@/lib/api-handler'
+import { handler, ok, okWithEtag, notFound, badRequest } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 
 export const GET = handler(
-  async (_request: NextRequest, context: { params: Promise<{ importId: string }> }) => {
+  async (request: NextRequest, context: { params: Promise<{ importId: string }> }) => {
     const { importId } = await context.params
     const record = imports.get(importId)
     if (!record) return notFound('import not found')
 
-    const list = images.listByImport(importId, 100000)
-    const vision = { pending: 0, processing: 0, ready: 0, failed: 0, unavailable: 0 }
-    for (const image of list) vision[image.visionStatus]++
+    const { total, ...vision } = images.statusCountsByImport(importId)
 
-    return ok({ import: record, imageCount: list.length, vision })
+    return okWithEtag(request, { import: record, imageCount: total, vision })
   }
 )
 

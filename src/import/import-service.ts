@@ -14,8 +14,9 @@
  * Server-only.
  */
 
+import fsp from 'fs/promises'
 import { readImageMetadata } from '@/vision'
-import { putOriginal, hashBytes } from '@/storage/media-store'
+import { putOriginalFromFile } from '@/storage/media-store'
 import { imports, images, products, visionAnalyses } from '@/db/repositories'
 import { transaction } from '@/db/client'
 import { enqueue } from '@/jobs/queue'
@@ -39,7 +40,21 @@ export interface IncomingFile {
   relativePath: string
   fileName: string
   mimeType: string
-  bytes: Buffer
+  /**
+   * Already-complete file written to the tenant's tmp/ dir by the streaming
+   * multipart parser (see the files-upload route) — never held in memory as
+   * a whole Buffer. Every exit path that does NOT end in `putOriginalFromFile`
+   * actually moving it (skipped, duplicate, failed) must delete it itself;
+   * see `cleanupTempFile` below.
+   */
+  tempPath: string
+  /** Computed while streaming to tempPath — never recomputed from a second read. */
+  sourceHash: string
+  byteSize: number
+}
+
+async function cleanupTempFile(tempPath: string): Promise<void> {
+  await fsp.rm(tempPath, { force: true }).catch(() => {})
 }
 
 export type IngestOutcome =
@@ -94,12 +109,13 @@ export async function ingestFiles(
       relativePath,
       name: file.fileName,
       mimeType: file.mimeType,
-      size: file.bytes.byteLength,
+      size: file.byteSize,
     })
 
     if (!classification.accepted) {
       skipped++
       results.push({ relativePath, outcome: { status: 'skipped', reason: classification.reason! } })
+      await cleanupTempFile(file.tempPath)
       continue
     }
 
@@ -128,6 +144,10 @@ export async function ingestFiles(
         relativePath,
         outcome: { status: 'failed', error: err instanceof Error ? err.message : String(err) },
       })
+      // ingestOne can throw before ever reaching putOriginalFromFile (e.g.
+      // readImageMetadata rejecting a decompression-bomb image) — that path
+      // never moves/deletes the temp file itself, so it's cleaned up here.
+      await cleanupTempFile(file.tempPath)
     }
   }
 
@@ -177,7 +197,12 @@ async function ingestOne(
   relativePath: string,
   groupByPath: Map<string, ReturnType<typeof groupIntoProducts>[number]>
 ): Promise<IngestOutcome> {
-  const metadata = await readImageMetadata(file.bytes)
+  // Reads from the temp file directly — sharp streams the header off disk,
+  // never needing the whole file resident as a Buffer. Rejects a
+  // decompression-bomb image (see readImageMetadata's MAX_INPUT_PIXELS) by
+  // throwing, which the caller's try/catch turns into a 'failed' outcome and
+  // cleans up the temp file for.
+  const metadata = await readImageMetadata(file.tempPath, file.byteSize)
 
   if (metadata.width === 0 || metadata.height === 0) {
     return { status: 'failed', error: 'image could not be decoded' }
@@ -198,15 +223,19 @@ async function ingestOne(
     category,
   })
 
-  const sourceHash = hashBytes(file.bytes)
+  const sourceHash = file.sourceHash
 
   // Same bytes already attached to this product — a re-run of the same upload.
   const existing = images.findByProductAndHash(product.id, sourceHash)
   if (existing) {
+    // Never moved into content-addressed storage — nothing else will clean
+    // this up, since the caller's try/catch only covers a throw, not this
+    // early return.
+    await cleanupTempFile(file.tempPath)
     return { status: 'duplicate', imageId: existing.id, productId: product.id }
   }
 
-  const stored = await putOriginal(file.bytes, metadata.mimeType)
+  const stored = await putOriginalFromFile(file.tempPath, sourceHash, metadata.mimeType)
 
   // These bytes may already be analysed, from another product or an earlier
   // import. If so the image is ready on arrival and never enters the queue.
@@ -221,7 +250,7 @@ async function ingestOne(
     fileName: file.fileName,
     relativePath,
     mimeType: metadata.mimeType,
-    byteSize: file.bytes.byteLength,
+    byteSize: file.byteSize,
     width: metadata.width,
     height: metadata.height,
     exifOrientation: metadata.exifOrientation,

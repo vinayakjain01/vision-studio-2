@@ -209,6 +209,15 @@ export const config = {
      */
     maintenanceSweepIntervalMs: int(process.env.JOB_MAINTENANCE_SWEEP_INTERVAL_MS, 30 * 60 * 1000),
     /**
+     * A tmp/ upload fragment older than this is presumed abandoned — its
+     * owning request crashed, was killed, or the client disconnected before
+     * the route's own `cleanupAll()` ran — and is removed by the same
+     * maintenance sweep. Generous on purpose: this is a backstop for requests
+     * that skipped normal cleanup, not a cap on how long an upload may
+     * legitimately take.
+     */
+    uploadTmpTtlMs: int(process.env.UPLOAD_TMP_TTL_MS, 6 * 60 * 60 * 1000),
+    /**
      * Per-kind watchdog: a job whose 'running' status outlives this is
      * presumed hung (not merely slow — `background_fill`'s own wait-for-
      * dependency pattern never holds 'running' status while waiting, see
@@ -266,6 +275,19 @@ export const config = {
     outputMaxDim: int(process.env.RENDER_OUTPUT_MAX_DIM, 2048),
     supersample: int(process.env.RENDER_SUPERSAMPLE, 2),
     jpegQuality: int(process.env.RENDER_JPEG_QUALITY, 95),
+    /**
+     * Export-conversion (sharp decode/re-encode at download time) concurrency
+     * caps — see src/render/export-concurrency.ts. Both the single-creative
+     * export route and the bulk ZIP route's per-file loop share these same
+     * two limiters, so a bulk export in progress genuinely throttles a
+     * concurrent single-file one, and vice versa.
+     */
+    exportGlobalConcurrency: int(process.env.EXPORT_GLOBAL_CONCURRENCY, 4),
+    exportPerTenantConcurrency: int(process.env.EXPORT_PER_TENANT_CONCURRENCY, 2),
+    /** How long a request waits for a saturated export slot before giving up with a 429/503. */
+    exportSlotWaitMs: int(process.env.EXPORT_SLOT_WAIT_MS, 2_000),
+    /** How many files a single bulk ZIP converts at once, INSIDE whatever global/per-tenant slots it can get — small on purpose, see the download route's own doc comment. */
+    zipInternalConcurrency: int(process.env.ZIP_INTERNAL_CONCURRENCY, 3),
   },
 
   cloudinary: {
@@ -307,6 +329,11 @@ export const config = {
      * than producing that silently.
      */
     maxUploadDim: int(process.env.CLOUDINARY_MAX_UPLOAD_DIM, 4096),
+  },
+
+  observability: {
+    /** How often the event-loop delay monitor logs and resets its window — see src/lib/event-loop-monitor.ts. */
+    eventLoopLogIntervalMs: int(process.env.EVENT_LOOP_LOG_INTERVAL_MS, 60_000),
   },
 
   auth: {

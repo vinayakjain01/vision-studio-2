@@ -7,6 +7,7 @@ import useSWR from 'swr'
 import { toast } from 'sonner'
 import { ArrowLeft, Ban, Download, Loader2, RotateCcw } from 'lucide-react'
 import { fetcher, patchJson } from '@/lib/api'
+import { jitterMs } from '@/lib/polling'
 import { DeleteButton } from '@/components/ui/delete-button'
 import { PageHeader, PageBody } from '@/components/shell/page-header'
 import {
@@ -19,7 +20,7 @@ import {
   Spinner,
   Stat,
 } from '@/components/ui/primitives'
-import { formatSeconds, timeAgo } from '@/lib/utils'
+import { cn, formatSeconds, timeAgo } from '@/lib/utils'
 import type { BatchProgress } from '@/services/generation-service'
 
 interface Response extends BatchProgress {
@@ -46,7 +47,7 @@ export function BatchDetailClient({ batchId }: { batchId: string }) {
       // Poll while the batch is live; stop once it settles.
       refreshInterval: latest =>
         latest && (latest.batch.status === 'running' || latest.batch.status === 'queued')
-          ? 1500
+          ? jitterMs(1500)
           : 0,
     }
   )
@@ -79,7 +80,7 @@ export function BatchDetailClient({ batchId }: { batchId: string }) {
 
   if (!data) return null
 
-  const { batch, queue, progress, etaSeconds, failures } = data
+  const { batch, queue, progress, etaSeconds, failures, waitingForWorker } = data
   const live = batch.status === 'running' || batch.status === 'queued'
 
   return (
@@ -165,6 +166,35 @@ export function BatchDetailClient({ batchId }: { batchId: string }) {
                 </p>
               )}
             </div>
+            {waitingForWorker && (
+              <p className="flex items-center gap-1.5 text-xs text-[var(--color-ink-subtle)]">
+                <Loader2 size={12} className="animate-spin" />
+                Waiting for a free worker…
+              </p>
+            )}
+            {data.photos.length > 0 && (
+              <div
+                className="flex flex-wrap gap-1 pt-1"
+                role="list"
+                aria-label="Per-photo render status"
+              >
+                {data.photos.map(photo => (
+                  <span
+                    key={photo.imageId}
+                    role="listitem"
+                    title={`${photo.imageId}: ${photo.status}`}
+                    className={cn(
+                      'h-2.5 w-2.5 rounded-sm',
+                      photo.status === 'done' && 'bg-[var(--color-positive)]',
+                      photo.status === 'running' && 'animate-pulse bg-[var(--color-accent)]',
+                      photo.status === 'queued' && 'bg-[var(--color-border-strong)]',
+                      photo.status === 'failed' && 'bg-[var(--color-danger)]',
+                      photo.status === 'cancelled' && 'bg-[var(--color-ink-subtle)]'
+                    )}
+                  />
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3 border-t border-[var(--color-border)] px-4 py-4 sm:grid-cols-4">

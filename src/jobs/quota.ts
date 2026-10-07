@@ -43,7 +43,8 @@ export function assertCanEnqueue(tenantId: string, additionalJobs: number): void
   if (current + additionalJobs > quota.maxQueuedJobs) {
     throw new QuotaExceededError(
       `Queueing ${additionalJobs} more job(s) would exceed this workspace's queued-job limit ` +
-        `(${current} already queued, limit ${quota.maxQueuedJobs}).`,
+        `(${current} already queued, limit ${quota.maxQueuedJobs}). Wait for some of the current ` +
+        `queue to finish, or retry with a smaller batch.`,
       'max_queued_jobs',
       quota.maxQueuedJobs,
       current
@@ -57,7 +58,7 @@ export function assertImagesPerBatch(tenantId: string, totalImageCount: number):
   if (totalImageCount > quota.maxImagesPerBatch) {
     throw new QuotaExceededError(
       `This import has ${totalImageCount} images, over this workspace's limit of ` +
-        `${quota.maxImagesPerBatch} per batch.`,
+        `${quota.maxImagesPerBatch} per batch. Split it into smaller imports.`,
       'max_images_per_batch',
       quota.maxImagesPerBatch,
       totalImageCount
@@ -80,7 +81,8 @@ export function assertStorageBudget(tenantId: string, additionalBytes: number): 
   if (usage.storageBytes + additionalBytes > quota.maxStorageBytes) {
     throw new QuotaExceededError(
       `This upload would exceed this workspace's storage limit ` +
-        `(${usage.storageBytes} used + ${additionalBytes} new > ${quota.maxStorageBytes} bytes).`,
+        `(${usage.storageBytes} used + ${additionalBytes} new > ${quota.maxStorageBytes} bytes). ` +
+        `Delete unused imports or creatives, or ask an admin to raise the storage limit.`,
       'max_storage_bytes',
       quota.maxStorageBytes,
       usage.storageBytes

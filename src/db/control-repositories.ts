@@ -284,6 +284,18 @@ export const sessions = {
       .run(nowIso(), userId)
   },
 
+  /**
+   * Same as `revokeAllForUser`, but keeps one session alive — the one doing
+   * the revoking. Used by self-service password change: the person changing
+   * their OWN password should not be logged out of the tab they just did it
+   * from, only every other session (a shared computer, a stolen cookie).
+   */
+  revokeAllForUserExcept(userId: string, keepSessionId: string): void {
+    getControlDb()
+      .prepare('UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND id != ? AND revoked_at IS NULL')
+      .run(nowIso(), userId, keepSessionId)
+  },
+
   /** Housekeeping: delete sessions that expired or were revoked more than a day ago. Safe to call often; cheap no-op when there's nothing to prune. */
   pruneExpired(): number {
     const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()

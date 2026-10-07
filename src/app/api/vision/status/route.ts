@@ -6,19 +6,22 @@
  * not from four thousand analyses reporting `unknown` garment data.
  */
 
+import { NextRequest } from 'next/server'
 import { getVisionStatus } from '@/services/vision-service'
 import { images } from '@/db/repositories'
 import * as queue from '@/jobs/queue'
 import { getPool } from '@/jobs/pool'
 import { MODEL_LIST } from '@/vision/model-registry'
 import { config } from '@/config'
+import { currentTenant } from '@/tenancy/context'
 import fs from 'fs'
 import path from 'path'
-import { handler, ok } from '@/lib/api-handler'
+import { handler, okWithEtag } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 
-export const GET = handler(async () => {
+export const GET = handler(async (request: NextRequest) => {
+  const tenantId = currentTenant().tenantId
   const status = await getVisionStatus()
   const counts = images.statusCounts()
   const total = images.total()
@@ -38,14 +41,19 @@ export const GET = handler(async () => {
     }
   })
 
-  return ok({
+  return okWithEtag(request, {
     engine: status,
     models,
     images: { total, ...counts },
+    // Scoped to this tenant — `queue.stats()` reads the GLOBAL control.db
+    // jobs table shared across every tenant (see P3's queue migration), so
+    // calling it with no tenantId here would leak every OTHER tenant's
+    // queue depth into this tenant's own settings page.
     queue: {
-      vision: queue.stats('vision'),
-      render: queue.stats('render'),
+      vision: queue.stats('vision', tenantId),
+      render: queue.stats('render', tenantId),
     },
+    // Worker id/kind/state/pid only — process-level, not tenant data.
     pool: getPool().status(),
   })
 })

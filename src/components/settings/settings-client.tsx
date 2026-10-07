@@ -5,6 +5,7 @@ import useSWR from 'swr'
 import { toast } from 'sonner'
 import { CheckCircle2, HardDrive, Loader2, RefreshCw, Trash2, XCircle } from 'lucide-react'
 import { fetcher, postJson } from '@/lib/api'
+import { jitterMs } from '@/lib/polling'
 import {
   Alert,
   Badge,
@@ -59,7 +60,7 @@ interface StatusResponse {
 
 export function SettingsClient() {
   const { data, mutate, isLoading } = useSWR<StatusResponse>('/api/vision/status', fetcher, {
-    refreshInterval: 4000,
+    refreshInterval: () => jitterMs(4000),
   })
   const [busy, setBusy] = React.useState(false)
   const [sweeping, setSweeping] = React.useState(false)

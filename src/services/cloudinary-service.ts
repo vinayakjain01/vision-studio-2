@@ -39,6 +39,7 @@
  */
 
 import { v2 as cloudinary } from 'cloudinary'
+import '@/lib/sharp-cache'
 import sharp from 'sharp'
 import { config } from '@/config'
 import type { EdgeContent } from '@/render/boundary-classify'

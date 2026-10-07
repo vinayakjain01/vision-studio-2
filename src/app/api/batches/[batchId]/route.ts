@@ -10,7 +10,7 @@ import { NextRequest } from 'next/server'
 import { getBatchProgress, cancelBatch, retryBatchFailures } from '@/services/generation-service'
 import { creatives, batches } from '@/db/repositories'
 import { mediaUrl } from '@/storage/media-store'
-import { handler, ok, badRequest, notFound } from '@/lib/api-handler'
+import { handler, ok, okWithEtag, badRequest, notFound } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
 
@@ -23,7 +23,7 @@ export const GET = handler(
 
     const includeCreatives = request.nextUrl.searchParams.get('creatives') === 'true'
 
-    return ok({
+    return okWithEtag(request, {
       ...progress,
       creatives: includeCreatives
         ? creatives.listByBatch(batchId, 200).map(creative => ({

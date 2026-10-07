@@ -10,7 +10,7 @@ import { NextRequest } from 'next/server'
 import { products, images, creatives, templates } from '@/db/repositories'
 import { getUsableAnalysis, getVisionAssetUrls } from '@/services/vision-service'
 import { mediaUrl } from '@/storage/media-store'
-import { handler, ok, notFound } from '@/lib/api-handler'
+import { handler, okWithEtag, notFound } from '@/lib/api-handler'
 import type { VisionMetadata } from '@/vision/types'
 
 export const dynamic = 'force-dynamic'
@@ -40,7 +40,7 @@ export interface ProductImageDetail {
 }
 
 export const GET = handler(
-  async (_request: NextRequest, context: { params: Promise<{ productId: string }> }) => {
+  async (request: NextRequest, context: { params: Promise<{ productId: string }> }) => {
     const { productId } = await context.params
 
     const product = products.get(productId)
@@ -89,6 +89,6 @@ export const GET = handler(
       createdAt: creative.createdAt,
     }))
 
-    return ok({ product, images: details, creatives: productCreatives })
+    return okWithEtag(request, { product, images: details, creatives: productCreatives })
   }
 )

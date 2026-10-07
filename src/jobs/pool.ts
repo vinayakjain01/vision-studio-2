@@ -48,7 +48,7 @@ import { batches } from '@/db/repositories'
 import { runWithTenant } from '@/tenancy/context'
 import { tenants } from '@/db/control-repositories'
 import { sweepOrphanedMedia } from '@/services/cleanup-service'
-import { reconcileStorageUsage } from '@/storage/media-store'
+import { reconcileStorageUsage, sweepStaleTmpFiles } from '@/storage/media-store'
 import type { JobKind } from '@/db/types'
 import type { WorkerMessage } from './worker-entry'
 
@@ -199,15 +199,16 @@ class WorkerPool {
   }
 
   /**
-   * Job retention pruning plus, per tenant, the media orphan sweep and
-   * storage-usage reconciliation (see media-store.ts's `reconcileStorageUsage`
-   * doc comment for why the incremental counter needs this backstop). Each
-   * tenant's media walk runs under its own `runWithTenant` — these two
-   * operations are the ones in this file that actually need tenant context,
-   * unlike the fast sweep's queue functions, which are deliberately global.
-   * One tenant's sweep failing (a locked file, a mid-flight write) is caught
-   * and logged per-tenant so it never skips every OTHER tenant's sweep in
-   * the same pass.
+   * Job retention pruning plus, per tenant, the media orphan sweep, storage-
+   * usage reconciliation (see media-store.ts's `reconcileStorageUsage` doc
+   * comment for why the incremental counter needs this backstop), and a
+   * stale-upload-tmp-file sweep (see `sweepStaleTmpFiles`'s doc comment).
+   * Each tenant's media walk runs under its own `runWithTenant` — these are
+   * the operations in this file that actually need tenant context, unlike
+   * the fast sweep's queue functions, which are deliberately global. One
+   * tenant's sweep failing (a locked file, a mid-flight write) is caught and
+   * logged per-tenant so it never skips every OTHER tenant's sweep in the
+   * same pass.
    */
   private async runMaintenanceSweep(): Promise<void> {
     try {
@@ -222,8 +223,12 @@ class WorkerPool {
         await runWithTenant({ tenantId: tenant.id, userId: 'system', role: 'owner' }, async () => {
           const swept = await sweepOrphanedMedia()
           await reconcileStorageUsage()
+          const staleTmp = await sweepStaleTmpFiles(config.jobs.uploadTmpTtlMs)
           if (swept.orphanedOriginals + swept.orphanedDerived + swept.orphanedCreatives > 0) {
             console.log(`[pool] tenant ${tenant.id}: swept ${JSON.stringify(swept)}`)
+          }
+          if (staleTmp > 0) {
+            console.log(`[pool] tenant ${tenant.id}: removed ${staleTmp} stale upload tmp file(s)`)
           }
         })
       } catch (err) {

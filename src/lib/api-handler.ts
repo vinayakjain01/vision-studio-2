@@ -18,15 +18,46 @@
  * `src/lib/api.ts`.
  */
 
+import crypto from 'crypto'
 import { NextRequest, NextResponse } from 'next/server'
 import { config } from '@/config'
 import { resolveSession } from '@/auth/session'
 import { runWithTenant } from '@/tenancy/context'
 import { QuotaExceededError } from '@/jobs/quota'
 import { AiExtendQuotaExceededError } from '@/jobs/ai-extend-dispatcher'
+import { ExportCapacityError } from '@/render/export-concurrency'
 
 export function ok<T>(data: T, init?: ResponseInit): NextResponse {
   return NextResponse.json(data as any, init)
+}
+
+/**
+ * Same JSON envelope as `ok()`, but with an `ETag` derived from the response
+ * body and `Cache-Control: no-cache` — which, despite the name, means "the
+ * browser MAY cache this, but must always revalidate with the server before
+ * using it", not "don't cache". That's exactly what status/progress polling
+ * wants: standard browser `fetch()` behavior already sends `If-None-Match`
+ * on the next request to the same URL once it has a cached, must-revalidate
+ * response, and transparently resolves the caller's `fetch()` promise with
+ * the cached 200 body when the server answers 304 — no client-side code
+ * needs to know this is happening. Used for the handful of GET endpoints
+ * SWR polls on an interval (batches, imports, products, engine status),
+ * where the common case under steady polling is "nothing changed since last
+ * time" and skipping the JSON re-serialization + re-parse + React re-render
+ * that a full 200 would trigger is the entire point.
+ */
+export function okWithEtag<T>(request: NextRequest, data: T): NextResponse {
+  const body = JSON.stringify(data)
+  const etag = `"${crypto.createHash('sha1').update(body).digest('hex')}"`
+  const headers = { etag, 'cache-control': 'private, no-cache' }
+
+  if (request.headers.get('if-none-match') === etag) {
+    return new NextResponse(null, { status: 304, headers })
+  }
+  return new NextResponse(body, {
+    status: 200,
+    headers: { ...headers, 'content-type': 'application/json' },
+  })
 }
 
 export function badRequest(message: string, details?: unknown): NextResponse {
@@ -133,15 +164,33 @@ export function handler<Args extends unknown[]>(
       // honest status: the request is valid, the caller is just over a
       // limit right now.
       if (err instanceof QuotaExceededError) {
+        // Every quota code is 429, but only `max_concurrent_uploads` is
+        // genuinely transient (a slot frees up as soon as another upload
+        // finishes) — the others (queued jobs, images-per-batch, storage)
+        // need a human to raise the limit or for usage to drop, so a
+        // Retry-After on those would be a lie about when retrying could
+        // possibly succeed.
+        const headers =
+          err.code === 'max_concurrent_uploads' ? { 'retry-after': '3' } : undefined
         return NextResponse.json(
           { error: err.message, code: err.code, limit: err.limit, current: err.current },
-          { status: 429 }
+          { status: 429, headers }
         )
       }
       if (err instanceof AiExtendQuotaExceededError) {
         return NextResponse.json(
           { error: err.message, code: 'ai_extend_quota', limit: err.limit, current: err.current },
           { status: 429 }
+        )
+      }
+      if (err instanceof ExportCapacityError) {
+        // 503 (not 429): this isn't the CALLER being over a limit, it's the
+        // server genuinely saturated right now — a real Retry-After, in
+        // seconds, since this one actually reflects how long this attempt
+        // itself was willing to wait before giving up.
+        return NextResponse.json(
+          { error: err.message, code: 'export_capacity' },
+          { status: 503, headers: { 'retry-after': String(err.retryAfterSeconds) } }
         )
       }
 

@@ -15,6 +15,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { creatives, images } from '@/db/repositories'
 import { readMedia } from '@/storage/media-store'
 import { convertForExport, parseExportOptions, withExtension } from '@/render/export-image'
+import { withExportSlot } from '@/render/export-concurrency'
+import { currentTenant } from '@/tenancy/context'
 import { handler, notFound } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
@@ -28,7 +30,9 @@ export const GET = handler(
 
     const options = parseExportOptions(request.nextUrl.searchParams)
     const stored = await readMedia('creatives', creative.storageKey)
-    const result = await convertForExport(stored, creative.mimeType, creative.width, options)
+    const result = await withExportSlot(currentTenant().tenantId, () =>
+      convertForExport(stored, creative.mimeType, creative.width, options)
+    )
 
     // Mirrors the source photo's own filename, same rule the bulk catalog
     // download uses — never the internal storage key, which is an opaque

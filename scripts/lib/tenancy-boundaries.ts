@@ -77,6 +77,7 @@ const ALLOWED = [
   'scripts/clear-queue.ts',
   'scripts/migrate.ts',
   'scripts/tenants-migrate-legacy.ts',
+  'scripts/bench-memory.ts',
 ]
 
 const SCAN_ROOTS = ['src', 'scripts']

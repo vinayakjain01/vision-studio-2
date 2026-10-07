@@ -22,6 +22,7 @@ import useSWR from 'swr'
 import { toast } from 'sonner'
 import { ChevronDown, ChevronRight, Download, Loader2, Play, Wand2 } from 'lucide-react'
 import { fetcher, postJson } from '@/lib/api'
+import { jitterMs } from '@/lib/polling'
 import { DeleteButton } from '@/components/ui/delete-button'
 import {
   Alert,
@@ -54,7 +55,7 @@ export function GenerateClient() {
     fetcher,
     {
       refreshInterval: latest =>
-        latest?.batches.some(b => b.status === 'running' || b.status === 'queued') ? 2000 : 0,
+        latest?.batches.some(b => b.status === 'running' || b.status === 'queued') ? jitterMs(2000) : 0,
     }
   )
 
