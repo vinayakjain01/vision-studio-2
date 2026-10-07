@@ -49,6 +49,7 @@ import { runWithTenant } from '@/tenancy/context'
 import { tenants } from '@/db/control-repositories'
 import { sweepOrphanedMedia } from '@/services/cleanup-service'
 import { reconcileStorageUsage, sweepStaleTmpFiles } from '@/storage/media-store'
+import { backfillHourlyRollups, pruneHourlyRollups } from './queue-wait-rollup'
 import type { JobKind } from '@/db/types'
 import type { WorkerMessage } from './worker-entry'
 
@@ -199,16 +200,17 @@ class WorkerPool {
   }
 
   /**
-   * Job retention pruning plus, per tenant, the media orphan sweep, storage-
-   * usage reconciliation (see media-store.ts's `reconcileStorageUsage` doc
-   * comment for why the incremental counter needs this backstop), and a
-   * stale-upload-tmp-file sweep (see `sweepStaleTmpFiles`'s doc comment).
-   * Each tenant's media walk runs under its own `runWithTenant` — these are
-   * the operations in this file that actually need tenant context, unlike
-   * the fast sweep's queue functions, which are deliberately global. One
-   * tenant's sweep failing (a locked file, a mid-flight write) is caught and
-   * logged per-tenant so it never skips every OTHER tenant's sweep in the
-   * same pass.
+   * Job retention pruning, the P5 admin page's hourly queue-wait rollup
+   * backfill (see queue-wait-rollup.ts), plus, per tenant, the media orphan
+   * sweep, storage-usage reconciliation (see media-store.ts's
+   * `reconcileStorageUsage` doc comment for why the incremental counter
+   * needs this backstop), and a stale-upload-tmp-file sweep (see
+   * `sweepStaleTmpFiles`'s doc comment). Each tenant's media walk runs
+   * under its own `runWithTenant` — these are the operations in this file
+   * that actually need tenant context, unlike the fast sweep's queue
+   * functions, which are deliberately global. One tenant's sweep failing (a
+   * locked file, a mid-flight write) is caught and logged per-tenant so it
+   * never skips every OTHER tenant's sweep in the same pass.
    */
   private async runMaintenanceSweep(): Promise<void> {
     try {
@@ -216,6 +218,14 @@ class WorkerPool {
       if (pruned > 0) console.log(`[pool] pruned ${pruned} job row(s) past retention`)
     } catch (err) {
       console.warn('[pool] job retention prune failed:', (err as Error).message)
+    }
+
+    try {
+      const backfilled = backfillHourlyRollups()
+      if (backfilled > 0) console.log(`[pool] backfilled ${backfilled} hourly queue-wait rollup bucket(s)`)
+      pruneHourlyRollups()
+    } catch (err) {
+      console.warn('[pool] queue-wait rollup backfill failed:', (err as Error).message)
     }
 
     for (const tenant of tenants.list()) {

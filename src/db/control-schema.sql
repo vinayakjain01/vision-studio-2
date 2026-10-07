@@ -32,11 +32,16 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS tenants (
-  id            TEXT PRIMARY KEY,
-  name          TEXT NOT NULL,
-  status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended')),
-  created_at    TEXT NOT NULL,
-  updated_at    TEXT NOT NULL
+  id                    TEXT PRIMARY KEY,
+  name                  TEXT NOT NULL,
+  status                TEXT NOT NULL DEFAULT 'active'
+                          CHECK (status IN ('active', 'suspended', 'pending_deletion')),
+  -- Set when an admin marks the tenant for deletion (P5) — the two-step
+  -- confirm-by-typing-the-name purge reads this to show how long it's been
+  -- pending; NULL unless status = 'pending_deletion'.
+  pending_deletion_at   TEXT,
+  created_at            TEXT NOT NULL,
+  updated_at            TEXT NOT NULL
 );
 
 -- Users and tenants are separate now even though v1 creates exactly one
@@ -186,6 +191,12 @@ CREATE INDEX IF NOT EXISTS idx_jobs_batch     ON jobs (tenant_id, batch_id, stat
 CREATE INDEX IF NOT EXISTS idx_jobs_heartbeat ON jobs (status, lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_pending_age ON jobs (priority_class, status, created_at);
 
+-- P5 admin tenants table: "jobs completed in the last 24h, per tenant"
+-- (the jobs/hour throughput column). Measured (scripts/bench-admin-queries.ts)
+-- at 100k rows: 79ms with a full scan, 27ms with this index — comfortably
+-- under the ~50ms bar without needing an hourly rollup.
+CREATE INDEX IF NOT EXISTS idx_jobs_completed_at ON jobs (status, completed_at, tenant_id);
+
 -- Scoped to (tenant_id, dedupe_key), not globally — the P1-era single-tenant
 -- version of this index let one tenant's in-flight job suppress another
 -- tenant's otherwise-identical request (same photo hash, different
@@ -194,6 +205,32 @@ CREATE INDEX IF NOT EXISTS idx_jobs_pending_age ON jobs (priority_class, status,
 CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_dedupe
   ON jobs (tenant_id, dedupe_key)
   WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'claimed', 'running');
+
+-- P5 admin tenants table: queue-wait p50/p95 (started_at - created_at).
+-- Computing this over a raw 24h window of `jobs` measured at ~100ms per
+-- call at 100k rows (scripts/bench-admin-queries.ts) — over the ~50ms bar,
+-- and an index didn't help (the result set is a large fraction of the
+-- table, so a full scan beats an index-seek-plus-row-lookup for most of
+-- it). One row per (tenant, hour) instead: computed from that hour's own
+-- jobs only — a small, bounded slice regardless of total table size — by
+-- the maintenance sweep (see src/jobs/queue-wait-rollup.ts), so reading
+-- "last 24h" means reading at most 24 small rows per tenant, not scanning
+-- the jobs table at all. The admin page approximates a 24h percentile as a
+-- sample-count-weighted average across these hourly values — not
+-- mathematically a true percentile-of-percentiles, but accurate enough for
+-- an operational dashboard, and exact for any single hour.
+CREATE TABLE IF NOT EXISTS queue_wait_hourly_rollups (
+  tenant_id     TEXT NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+  -- 'YYYY-MM-DDTHH', UTC.
+  hour_bucket   TEXT NOT NULL,
+  sample_count  INTEGER NOT NULL,
+  p50_ms        REAL NOT NULL,
+  p95_ms        REAL NOT NULL,
+  computed_at   TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, hour_bucket)
+);
+
+CREATE INDEX IF NOT EXISTS idx_queue_wait_rollups_bucket ON queue_wait_hourly_rollups (hour_bucket);
 
 -- Denormalized fair-share bookkeeping (§3.2/§5) — `running_jobs` is
 -- maintained transactionally by claim()/complete()/fail()/reclaimStale()

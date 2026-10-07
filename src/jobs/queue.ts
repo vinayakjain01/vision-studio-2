@@ -221,9 +221,19 @@ function claimCandidate(
   priorityClass: JobPriorityClass,
   now: string
 ): { tenantId: string; jobId: string } | null {
+  // Joined against `tenants` so a suspended or pending-deletion tenant's
+  // jobs are never claimed — both tables are sized by TENANT count, not job
+  // count, so this join costs nothing like the `jobs` table scans this
+  // function exists to avoid (see docs/MULTI_TENANCY.md §3.2 and
+  // scripts/bench-claim.ts). A suspended tenant's queued jobs stay queued
+  // (not deleted) and simply never surface here; a resume makes them
+  // claimable again with no other change needed.
   const tenants = db
     .prepare(
-      `SELECT tenant_id FROM tenant_queue_state ORDER BY (CAST(running_jobs AS REAL) / weight) ASC`
+      `SELECT tqs.tenant_id AS tenant_id FROM tenant_queue_state tqs
+       JOIN tenants t ON t.id = tqs.tenant_id
+       WHERE t.status = 'active'
+       ORDER BY (CAST(tqs.running_jobs AS REAL) / tqs.weight) ASC`
     )
     .all() as { tenant_id: string }[]
 

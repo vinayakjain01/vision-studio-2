@@ -10,6 +10,7 @@
  */
 
 import argon2 from 'argon2'
+import crypto from 'crypto'
 
 export async function hashPassword(plain: string): Promise<string> {
   return argon2.hash(plain, { type: argon2.argon2id })
@@ -28,4 +29,20 @@ export async function verifyPassword(hash: string, plain: string): Promise<boole
     // fail closed as "wrong password", not throw past the login route.
     return false
   }
+}
+
+/**
+ * One-time credential for admin-initiated account creation / password
+ * reset (P5) — shown to the admin ONCE in the response body, never logged,
+ * never persisted anywhere except as its argon2 hash. Readable-by-a-human
+ * on purpose (a restricted alphabet with no visually-ambiguous characters:
+ * no 0/O, 1/l/I), since an admin typically has to relay this to the account
+ * holder over some out-of-band channel (phone, a support ticket).
+ */
+export function generateTempPassword(length = 16): string {
+  const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789'
+  const bytes = crypto.randomBytes(length)
+  let out = ''
+  for (let i = 0; i < length; i++) out += alphabet[bytes[i] % alphabet.length]
+  return out
 }

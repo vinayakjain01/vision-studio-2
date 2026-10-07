@@ -149,6 +149,24 @@ export function openTenantDbById(tenantId: string): Db {
   return db
 }
 
+/**
+ * Closes and forgets ONE tenant's handle, if open — used by the admin
+ * tenant-purge action (P5) before deleting that tenant's directory on disk;
+ * on Windows in particular, an open handle to `app.db` would make the
+ * directory delete fail.
+ */
+export function closeTenantDb(tenantId: string): void {
+  const handles = tenantHandles()
+  const db = handles.get(tenantId)
+  if (!db) return
+  handles.delete(tenantId)
+  try {
+    db.close()
+  } catch {
+    // Already closed; nothing more to do.
+  }
+}
+
 function evictIfNeeded(handles: Map<string, Db>): void {
   while (handles.size > MAX_OPEN_TENANT_HANDLES) {
     const oldestKey = handles.keys().next().value

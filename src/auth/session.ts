@@ -18,7 +18,7 @@
 
 import crypto from 'crypto'
 import { config } from '@/config'
-import { sessions, memberships, users } from '@/db/control-repositories'
+import { sessions, memberships, users, tenants } from '@/db/control-repositories'
 import type { TenantContext } from '@/tenancy/context'
 
 export function generateSessionToken(): string {
@@ -38,6 +38,8 @@ export interface ResolvedSession {
   isPlatformAdmin: boolean
   /** Null for a platform_admin with no personal tenant — otherwise always set. */
   tenant: TenantContext | null
+  /** Set by an admin-initiated account creation or password reset (P5) — middleware confines this session to the change-password flow until cleared. */
+  mustChangePassword: boolean
 }
 
 /**
@@ -63,6 +65,12 @@ export function resolveSession(token: string | undefined | null): ResolvedSessio
 
   const membership = memberships.findForUser(user.id)
 
+  // A suspended tenant's sessions are revoked as part of the suspend action
+  // itself — this is the defensive second check (same "never trust just one
+  // gate" posture as the rest of this function), for the brief window
+  // between marking the tenant suspended and that revoke actually running.
+  if (membership && tenants.get(membership.tenantId)?.status === 'suspended') return null
+
   // Debounced: every authenticated request (every page view, every API call)
   // reaches this function, and a plain WAL-mode UPDATE still needs
   // control.db's single writer lock — a busy session polling or navigating
@@ -84,6 +92,7 @@ export function resolveSession(token: string | undefined | null): ResolvedSessio
     tenant: membership
       ? { tenantId: membership.tenantId, userId: user.id, role: membership.role }
       : null,
+    mustChangePassword: user.mustChangePassword,
   }
 }
 

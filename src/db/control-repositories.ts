@@ -98,16 +98,26 @@ export const users = {
 
 // ─── Tenants ────────────────────────────────────────────────────────────────
 
+export type TenantStatus = 'active' | 'suspended' | 'pending_deletion'
+
 export interface TenantRecord {
   id: string
   name: string
-  status: 'active' | 'suspended'
+  status: TenantStatus
+  pendingDeletionAt: string | null
   createdAt: string
   updatedAt: string
 }
 
 function toTenant(row: any): TenantRecord {
-  return { id: row.id, name: row.name, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at }
+  return {
+    id: row.id,
+    name: row.name,
+    status: row.status,
+    pendingDeletionAt: row.pending_deletion_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
 }
 
 export const tenants = {
@@ -173,10 +183,30 @@ export const tenants = {
       .map(toTenant)
   },
 
+  /** For 'active'/'suspended' only — use `markPendingDeletion`/`unmarkPendingDeletion` for that state, which also manage `pending_deletion_at`. */
   setStatus(id: string, status: 'active' | 'suspended'): void {
     getControlDb()
       .prepare('UPDATE tenants SET status = ?, updated_at = ? WHERE id = ?')
       .run(status, nowIso(), id)
+  },
+
+  markPendingDeletion(id: string): void {
+    const now = nowIso()
+    getControlDb()
+      .prepare('UPDATE tenants SET status = ?, pending_deletion_at = ?, updated_at = ? WHERE id = ?')
+      .run('pending_deletion', now, now, id)
+  },
+
+  /** Admin changed their mind before purging — back to active, deletion timer cleared. */
+  unmarkPendingDeletion(id: string): void {
+    getControlDb()
+      .prepare("UPDATE tenants SET status = 'active', pending_deletion_at = NULL, updated_at = ? WHERE id = ?")
+      .run(nowIso(), id)
+  },
+
+  /** Permanently removes the tenant row — cascades to memberships/quotas/tenant_queue_state/ai_extend_tenant_state/usage_counters via their FKs. Caller is responsible for the tenant's jobs (no FK, separate table) and its on-disk media directory. */
+  delete(id: string): void {
+    getControlDb().prepare('DELETE FROM tenants WHERE id = ?').run(id)
   },
 }
 
@@ -221,6 +251,14 @@ export const memberships = {
     return getControlDb()
       .prepare('SELECT * FROM memberships WHERE user_id = ? ORDER BY created_at ASC')
       .all(userId)
+      .map(toMembership)
+  },
+
+  /** Every member of a tenant — used by the admin suspend action to find every session that needs revoking. */
+  listForTenant(tenantId: string): MembershipRecord[] {
+    return getControlDb()
+      .prepare('SELECT * FROM memberships WHERE tenant_id = ? ORDER BY created_at ASC')
+      .all(tenantId)
       .map(toMembership)
   },
 }
@@ -335,6 +373,26 @@ export const loginAttempts = {
 
 // ─── Audit log ──────────────────────────────────────────────────────────────
 
+export interface AuditLogEntry {
+  id: string
+  actorUserId: string | null
+  tenantId: string | null
+  action: string
+  detail: unknown
+  createdAt: string
+}
+
+function toAuditLogEntry(row: any): AuditLogEntry {
+  return {
+    id: row.id,
+    actorUserId: row.actor_user_id,
+    tenantId: row.tenant_id,
+    action: row.action,
+    detail: row.detail ? JSON.parse(row.detail) : null,
+    createdAt: row.created_at,
+  }
+}
+
 export const auditLog = {
   record(entry: {
     actorUserId: string | null
@@ -354,6 +412,47 @@ export const auditLog = {
         entry.detail != null ? JSON.stringify(entry.detail) : null,
         nowIso()
       )
+  },
+
+  /** Filtered, paginated listing for the P5 admin audit log viewer. Every filter is optional and AND-combined. */
+  list(filters: {
+    actorUserId?: string
+    action?: string
+    tenantId?: string
+    fromDate?: string
+    toDate?: string
+    limit?: number
+    offset?: number
+  }): AuditLogEntry[] {
+    const clauses: string[] = []
+    const params: unknown[] = []
+    if (filters.actorUserId) {
+      clauses.push('actor_user_id = ?')
+      params.push(filters.actorUserId)
+    }
+    if (filters.action) {
+      clauses.push('action = ?')
+      params.push(filters.action)
+    }
+    if (filters.tenantId) {
+      clauses.push('tenant_id = ?')
+      params.push(filters.tenantId)
+    }
+    if (filters.fromDate) {
+      clauses.push('created_at >= ?')
+      params.push(filters.fromDate)
+    }
+    if (filters.toDate) {
+      clauses.push('created_at <= ?')
+      params.push(filters.toDate)
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
+    const limit = Math.min(500, filters.limit ?? 100)
+    const offset = filters.offset ?? 0
+    return getControlDb()
+      .prepare(`SELECT * FROM audit_log ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+      .all(...params, limit, offset)
+      .map(toAuditLogEntry)
   },
 }
 
@@ -404,6 +503,36 @@ export const quotas = {
 
   setWeight(tenantId: string, weight: number): void {
     getControlDb().prepare('UPDATE quotas SET weight = ? WHERE tenant_id = ?').run(weight, tenantId)
+  },
+
+  /**
+   * Partial update for the admin "edit quotas" action — only the fields
+   * present in `patch` change. Scheduler `weight` lives here too, but
+   * editing it ALSO requires `tenantQueueState.setWeight` (the scheduler's
+   * own working copy — see that table's doc comment for why they're two
+   * columns); callers that change weight must call both, which is why
+   * `admin-service.ts`'s `updateTenantQuotas` wraps this rather than routes
+   * calling it directly.
+   */
+  update(tenantId: string, patch: Partial<Omit<QuotaRecord, 'tenantId'>>): QuotaRecord {
+    const current = this.getOrThrow(tenantId)
+    const next: QuotaRecord = { ...current, ...patch, tenantId }
+    getControlDb()
+      .prepare(
+        `UPDATE quotas SET max_queued_jobs = ?, max_images_per_batch = ?, max_concurrent_uploads = ?,
+                           max_storage_bytes = ?, max_ai_extend_per_month = ?, weight = ?
+         WHERE tenant_id = ?`
+      )
+      .run(
+        next.maxQueuedJobs,
+        next.maxImagesPerBatch,
+        next.maxConcurrentUploads,
+        next.maxStorageBytes,
+        next.maxAiExtendPerMonth,
+        next.weight,
+        tenantId
+      )
+    return next
   },
 }
 

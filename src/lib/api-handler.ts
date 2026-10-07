@@ -76,7 +76,8 @@ export function serverError(message: string, details?: unknown): NextResponse {
   return NextResponse.json({ error: message, details }, { status: 500 })
 }
 
-const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+/** Exported for `src/lib/admin-handler.ts`, which needs the same CSRF check for admin routes. */
+export const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
 /**
  * A mutating request whose `Origin` header names a different host is
@@ -97,7 +98,8 @@ const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
  * unset in development, `nextUrl.host` is already correct (no proxy sits
  * in front of `next dev`).
  */
-function originIsTrusted(request: NextRequest): boolean {
+/** Exported for `src/lib/admin-handler.ts` — same CSRF defense, same reasoning. */
+export function originIsTrusted(request: NextRequest): boolean {
   const origin = request.headers.get('origin')
   if (!origin) return true
 
@@ -158,45 +160,54 @@ export function handler<Args extends unknown[]>(
 
       return await runWithTenant(resolved.tenant, () => fn(...args))
     } catch (err) {
-      // Structured quota errors (code + limit + current usage) get their own
-      // response shape — a stable `code` lets the UI render "12/20 uploads"
-      // (P4) instead of pattern-matching the message string, and 429 is the
-      // honest status: the request is valid, the caller is just over a
-      // limit right now.
-      if (err instanceof QuotaExceededError) {
-        // Every quota code is 429, but only `max_concurrent_uploads` is
-        // genuinely transient (a slot frees up as soon as another upload
-        // finishes) — the others (queued jobs, images-per-batch, storage)
-        // need a human to raise the limit or for usage to drop, so a
-        // Retry-After on those would be a lie about when retrying could
-        // possibly succeed.
-        const headers =
-          err.code === 'max_concurrent_uploads' ? { 'retry-after': '3' } : undefined
-        return NextResponse.json(
-          { error: err.message, code: err.code, limit: err.limit, current: err.current },
-          { status: 429, headers }
-        )
-      }
-      if (err instanceof AiExtendQuotaExceededError) {
-        return NextResponse.json(
-          { error: err.message, code: 'ai_extend_quota', limit: err.limit, current: err.current },
-          { status: 429 }
-        )
-      }
-      if (err instanceof ExportCapacityError) {
-        // 503 (not 429): this isn't the CALLER being over a limit, it's the
-        // server genuinely saturated right now — a real Retry-After, in
-        // seconds, since this one actually reflects how long this attempt
-        // itself was willing to wait before giving up.
-        return NextResponse.json(
-          { error: err.message, code: 'export_capacity' },
-          { status: 503, headers: { 'retry-after': String(err.retryAfterSeconds) } }
-        )
-      }
-
-      const message = err instanceof Error ? err.message : String(err)
-      console.error('[api]', err)
-      return serverError(message)
+      return mapKnownError(err)
     }
   }
+}
+
+/**
+ * The known-error-to-response mapping shared by `handler()` and
+ * `src/lib/admin-handler.ts`'s `adminHandler()` — extracted so admin routes
+ * get the same structured 429/503 handling (e.g. an admin action that hits
+ * a tenant's own quota check) without duplicating the mapping.
+ */
+export function mapKnownError(err: unknown): NextResponse {
+  // Structured quota errors (code + limit + current usage) get their own
+  // response shape — a stable `code` lets the UI render "12/20 uploads"
+  // (P4) instead of pattern-matching the message string, and 429 is the
+  // honest status: the request is valid, the caller is just over a
+  // limit right now.
+  if (err instanceof QuotaExceededError) {
+    // Every quota code is 429, but only `max_concurrent_uploads` is
+    // genuinely transient (a slot frees up as soon as another upload
+    // finishes) — the others (queued jobs, images-per-batch, storage)
+    // need a human to raise the limit or for usage to drop, so a
+    // Retry-After on those would be a lie about when retrying could
+    // possibly succeed.
+    const headers = err.code === 'max_concurrent_uploads' ? { 'retry-after': '3' } : undefined
+    return NextResponse.json(
+      { error: err.message, code: err.code, limit: err.limit, current: err.current },
+      { status: 429, headers }
+    )
+  }
+  if (err instanceof AiExtendQuotaExceededError) {
+    return NextResponse.json(
+      { error: err.message, code: 'ai_extend_quota', limit: err.limit, current: err.current },
+      { status: 429 }
+    )
+  }
+  if (err instanceof ExportCapacityError) {
+    // 503 (not 429): this isn't the CALLER being over a limit, it's the
+    // server genuinely saturated right now — a real Retry-After, in
+    // seconds, since this one actually reflects how long this attempt
+    // itself was willing to wait before giving up.
+    return NextResponse.json(
+      { error: err.message, code: 'export_capacity' },
+      { status: 503, headers: { 'retry-after': String(err.retryAfterSeconds) } }
+    )
+  }
+
+  const message = err instanceof Error ? err.message : String(err)
+  console.error('[api]', err)
+  return serverError(message)
 }

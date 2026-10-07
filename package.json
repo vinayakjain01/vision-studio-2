@@ -17,7 +17,10 @@
     "models:fetch": "tsx scripts/fetch-models.ts",
     "models:verify": "tsx scripts/fetch-models.ts --verify-only",
     "worker": "tsx src/jobs/runner.ts",
-    "setup": "npm run db:migrate && npm run models:fetch"
+    "setup": "npm run db:migrate && npm run models:fetch",
+    "bench:memory": "tsx scripts/bench-memory-client.ts",
+    "admin:create-tenant": "tsx scripts/admin-create-tenant.ts",
+    "admin:reset-password": "tsx scripts/admin-reset-password.ts"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.3",

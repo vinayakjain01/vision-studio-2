@@ -213,4 +213,38 @@ export const ROUTE_MANIFEST: RouteEntry[] = [
       'matrix: the "resource" is a storage key, not a DB row ID, and the route also needs path-traversal ' +
       'coverage the generic matrix does not express.',
   },
+
+  // ── Admin (P5) ──────────────────────────────────────────────────────────
+  // None of these take a "resource owned by the caller's tenant" ID the way
+  // the generic matrix above checks — an admin operates ACROSS tenants by
+  // design (a `tenantId` in the path here names the tenant being
+  // administered, not the caller's own). The property that actually matters
+  // — a regular tenant user, an anonymous caller, or a forged session
+  // cannot reach ANY of these at all — is covered by its own dedicated
+  // suite, tests/isolation/admin-isolation.test.ts, not the per-ID matrix.
+  {
+    routePath: '/api/admin/tenants',
+    methods: ['GET', 'POST'],
+    note: 'platform-admin only; covered by admin-isolation.test.ts, not the per-ID matrix (see section comment above)',
+  },
+  {
+    routePath: '/api/admin/tenants/[tenantId]',
+    methods: ['PATCH', 'DELETE'],
+    note: 'platform-admin only; covered by admin-isolation.test.ts, not the per-ID matrix (see section comment above)',
+  },
+  {
+    routePath: '/api/admin/users/[userId]/reset-password',
+    methods: ['POST'],
+    note: 'platform-admin only; covered by admin-isolation.test.ts, not the per-ID matrix (see section comment above)',
+  },
+  {
+    routePath: '/api/admin/global',
+    methods: ['GET'],
+    note: 'platform-admin only; covered by admin-isolation.test.ts, not the per-ID matrix (see section comment above)',
+  },
+  {
+    routePath: '/api/admin/audit-log',
+    methods: ['GET'],
+    note: 'platform-admin only; covered by admin-isolation.test.ts, not the per-ID matrix (see section comment above)',
+  },
 ]

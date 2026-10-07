@@ -517,3 +517,16 @@ export function ensureMediaRoots(tenantId: string): void {
     fs.mkdirSync(dir, { recursive: true })
   }
 }
+
+/**
+ * Irreversibly removes a tenant's ENTIRE directory — its app.db and every
+ * media file. Used only by the admin purge action (P5), the one place in
+ * this app that genuinely needs to delete a whole tenant at once; the
+ * caller is responsible for closing any open handle to that tenant's
+ * database first (`closeTenantDb`) and for deleting the control.db `tenants`
+ * row (whose `ON DELETE CASCADE` FKs remove every other control-plane trace)
+ * — this function only ever touches the filesystem.
+ */
+export async function purgeTenantDirectory(tenantId: string): Promise<void> {
+  await fsp.rm(tenantPaths(tenantId).root, { recursive: true, force: true })
+}

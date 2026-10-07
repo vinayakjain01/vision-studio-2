@@ -5,7 +5,7 @@
  */
 
 import { config } from '@/config'
-import { users, loginAttempts } from '@/db/control-repositories'
+import { users, loginAttempts, memberships, tenants } from '@/db/control-repositories'
 import { verifyPassword } from './password'
 import { createSession } from './session'
 
@@ -53,6 +53,18 @@ export async function attemptLogin(email: string, password: string, ip: string):
   }
 
   if (user.disabledAt) {
+    loginAttempts.record(emailKey, false)
+    loginAttempts.record(ipKey, false)
+    return { ok: false, reason: 'disabled' }
+  }
+
+  // Suspending a TENANT (P5 admin action) revokes every existing session at
+  // the moment it happens, but must ALSO block a fresh login afterward with
+  // correct credentials — this is that second check. A platform admin with
+  // no personal tenant has no membership to find here, so this never
+  // affects them.
+  const membership = memberships.findForUser(user.id)
+  if (membership && tenants.get(membership.tenantId)?.status === 'suspended') {
     loginAttempts.record(emailKey, false)
     loginAttempts.record(ipKey, false)
     return { ok: false, reason: 'disabled' }

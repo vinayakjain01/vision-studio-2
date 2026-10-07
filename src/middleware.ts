@@ -45,6 +45,24 @@ function isPublic(pathname: string): boolean {
   )
 }
 
+function isAdminPath(pathname: string): boolean {
+  return pathname === '/admin' || pathname.startsWith('/admin/') || pathname.startsWith('/api/admin/')
+}
+
+/**
+ * Reachable even while `mustChangePassword` is set (P5: admin-created
+ * accounts and admin-reset passwords force this) — enough to actually
+ * change the password and nothing else. `/settings` because that's where
+ * the Account panel's change-password form lives (see
+ * src/components/settings/account-panel.tsx); a dedicated page was not
+ * worth adding just for this one gate.
+ */
+const ALLOWED_WHILE_MUST_CHANGE_PASSWORD = ['/settings', '/api/auth/change-password', '/api/auth/logout']
+
+function isAllowedWhileMustChangePassword(pathname: string): boolean {
+  return ALLOWED_WHILE_MUST_CHANGE_PASSWORD.some(p => pathname === p || pathname.startsWith(`${p}/`))
+}
+
 export function middleware(request: NextRequest): NextResponse {
   const { pathname } = request.nextUrl
   if (isPublic(pathname)) return NextResponse.next()
@@ -59,6 +77,31 @@ export function middleware(request: NextRequest): NextResponse {
     const loginUrl = new URL('/login', request.url)
     loginUrl.searchParams.set('next', pathname)
     return NextResponse.redirect(loginUrl)
+  }
+
+  // Defense in depth, same reasoning as the plain-session check above: the
+  // route handler (`adminHandler()`) and page (`withAdmin()`) each check
+  // `isPlatformAdmin` again themselves — this is the fast, first-line
+  // reject for the API case, not the only one. For a PAGE request this
+  // intentionally does NOT short-circuit here: App Router has no
+  // middleware-level equivalent of rendering the not-found boundary (that's
+  // a page-rendering primitive, `next/navigation`'s `notFound()`), so the
+  // request falls through to `withAdmin()`, which calls it — the end
+  // result is the same real 404 page either way, never a 403 that confirms
+  // the area exists.
+  if (isAdminPath(pathname) && !resolved.isPlatformAdmin && pathname.startsWith('/api/')) {
+    return NextResponse.json({ error: 'not found' }, { status: 404 })
+  }
+
+  // P5: a temp password (admin-created account, admin password reset) must
+  // be changed before anything else — confine the session to exactly the
+  // page/routes that let them do that, rather than trusting the login
+  // response's `mustChangePassword` flag to be acted on client-side alone.
+  if (resolved.mustChangePassword && !isAllowedWhileMustChangePassword(pathname)) {
+    if (pathname.startsWith('/api/')) {
+      return NextResponse.json({ error: 'password change required', code: 'must_change_password' }, { status: 403 })
+    }
+    return NextResponse.redirect(new URL('/settings', request.url))
   }
 
   return NextResponse.next()
