@@ -200,6 +200,15 @@ export const config = {
      */
     retentionDays: int(process.env.JOB_RETENTION_DAYS, 30),
     /**
+     * Cadence for the SLOW maintenance sweep (job retention pruning, the
+     * media orphan sweep, and storage-usage reconciliation — see pool.ts) —
+     * separate from the 60s fast sweep (reclaimStale/reconcileRunningJobs/
+     * promoteAgedBulkJobs, all cheap indexed SQL) because this one does a
+     * real disk walk per tenant and a potentially-large DELETE, neither of
+     * which needs to run anywhere near that often.
+     */
+    maintenanceSweepIntervalMs: int(process.env.JOB_MAINTENANCE_SWEEP_INTERVAL_MS, 30 * 60 * 1000),
+    /**
      * Per-kind watchdog: a job whose 'running' status outlives this is
      * presumed hung (not merely slow — `background_fill`'s own wait-for-
      * dependency pattern never holds 'running' status while waiting, see

@@ -3,6 +3,9 @@ import { describe, it, expect } from 'vitest'
 import { migrateTenantJobs } from '../../scripts/lib/legacy-migration-jobs'
 import { createTestTenant } from '../helpers/tenancy-fixture'
 import { getControlDb } from '@/db/client'
+import { runWithTenant } from '@/tenancy/context'
+import { batches } from '@/db/repositories'
+import * as queue from '@/jobs/queue'
 
 /** A minimal in-memory DB shaped like a pre-P3 tenant app.db's `jobs` table. */
 function makeLegacyTenantDb(rows: Record<string, unknown>[]): Database.Database {
@@ -111,5 +114,35 @@ describe('legacy migration: tenant jobs copy', () => {
     const emptyDb = new Database(':memory:')
     const result = migrateTenantJobs(t.tenantId, emptyDb, getControlDb())
     expect(result).toEqual({ copied: 0, legacyCount: 0 })
+  })
+
+  it('a migrated batch\'s progress displays correctly through the real queue.batchJobCounts()/batches.refresh() pipeline', () => {
+    const t = createTestTenant('T')
+    const batch = runWithTenant({ tenantId: t.tenantId, userId: t.userId, role: 'owner' }, () =>
+      batches.create('legacy batch')
+    )
+
+    const legacyDb = makeLegacyTenantDb([
+      { ...BASE_ROW, id: 'job_1', kind: 'render', status: 'completed', priority: 50, batch_id: batch.id, attempts: 1, max_attempts: 3, payload: '{}', created_at: 'a', updated_at: 'a', completed_at: 'a' },
+      { ...BASE_ROW, id: 'job_2', kind: 'render', status: 'completed', priority: 50, batch_id: batch.id, attempts: 1, max_attempts: 3, payload: '{}', created_at: 'a', updated_at: 'a', completed_at: 'a' },
+      { ...BASE_ROW, id: 'job_3', kind: 'render', status: 'failed', priority: 50, batch_id: batch.id, attempts: 3, max_attempts: 3, payload: '{}', error: 'boom', created_at: 'a', updated_at: 'a', completed_at: 'a' },
+    ])
+
+    migrateTenantJobs(t.tenantId, legacyDb, getControlDb())
+
+    const counts = queue.batchJobCounts(t.tenantId, batch.id)
+    expect(counts).toEqual({ total: 3, completed: 2, failed: 1, cancelled: 0, active: 0 })
+
+    const refreshed = runWithTenant({ tenantId: t.tenantId, userId: t.userId, role: 'owner' }, () =>
+      batches.refresh(batch.id, counts)
+    )
+    expect(refreshed?.totalJobs).toBe(3)
+    expect(refreshed?.completedJobs).toBe(2)
+    expect(refreshed?.failedJobs).toBe(1)
+    // Some succeeded and some failed, none still active — settles to 'completed'
+    // (batches.refresh's own status-derivation rule: failed>0 && completed===0
+    // would be 'failed', but completed>0 here means partial success, not total
+    // failure).
+    expect(refreshed?.status).toBe('completed')
   })
 })

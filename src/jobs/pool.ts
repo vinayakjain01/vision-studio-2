@@ -46,6 +46,9 @@ import { config } from '@/config'
 import * as queue from './queue'
 import { batches } from '@/db/repositories'
 import { runWithTenant } from '@/tenancy/context'
+import { tenants } from '@/db/control-repositories'
+import { sweepOrphanedMedia } from '@/services/cleanup-service'
+import { reconcileStorageUsage } from '@/storage/media-store'
 import type { JobKind } from '@/db/types'
 import type { WorkerMessage } from './worker-entry'
 
@@ -57,7 +60,7 @@ export interface PoolStatus {
   startedAt: string | null
 }
 
-interface CurrentJob {
+export interface CurrentJob {
   jobId: string
   kind: JobKind
   tenantId: string
@@ -71,6 +74,24 @@ interface WorkerHandle {
   state: 'starting' | 'idle' | 'busy' | 'stopped'
   restarts: number
   currentJob: CurrentJob | null
+}
+
+/**
+ * The watchdog's decision logic, pulled out as a pure function so it can be
+ * unit-tested directly against synthetic `CurrentJob`/`now` values without
+ * spawning a real worker process or loading the vision engine — see
+ * tests/jobs/pool-watchdog.test.ts. `WorkerPool.checkWatchdog()` is a thin
+ * wrapper that calls this, then performs the actual kill + queue.fail() side
+ * effects (both already exercised elsewhere: `child.kill()` is a single
+ * Node API call, and `queue.fail()` has its own thorough test coverage in
+ * tests/jobs/queue.test.ts).
+ */
+export function isJobHung(
+  job: Pick<CurrentJob, 'kind' | 'startedAt'>,
+  now: number,
+  maxRuntimeMs: Record<JobKind, number>
+): boolean {
+  return now - job.startedAt > maxRuntimeMs[job.kind]
 }
 
 /** A worker that crashes this many times is not respawned again. */
@@ -87,6 +108,7 @@ class WorkerPool {
   private failed = 0
   private sweeper: NodeJS.Timeout | null = null
   private watchdog: NodeJS.Timeout | null = null
+  private maintenanceSweeper: NodeJS.Timeout | null = null
 
   isRunning(): boolean {
     return this.started
@@ -155,11 +177,59 @@ class WorkerPool {
     this.watchdog = setInterval(() => this.checkWatchdog(), WATCHDOG_INTERVAL_MS)
     this.watchdog.unref?.()
 
+    // Slower sweep: job retention pruning (control.db only, no tenant
+    // context needed) plus, per tenant, the media orphan sweep and storage-
+    // usage reconciliation — both a real disk walk, which is why this runs
+    // on its own much longer interval rather than piggybacking on the fast
+    // sweep above. Runs once at startup too, not just after the first
+    // interval elapses, so a long-idle install doesn't wait
+    // `maintenanceSweepIntervalMs` for its first prune.
+    void this.runMaintenanceSweep()
+    this.maintenanceSweeper = setInterval(
+      () => void this.runMaintenanceSweep(),
+      config.jobs.maintenanceSweepIntervalMs
+    )
+    this.maintenanceSweeper.unref?.()
+
     console.log(
       `[pool] starting — ${visionSlots} vision worker(s), ${renderSlots} render worker(s), ` +
       `${backgroundFillSlots} background-fill worker(s), ` +
       `${config.vision.ortThreads} ORT thread(s) each, staggered`
     )
+  }
+
+  /**
+   * Job retention pruning plus, per tenant, the media orphan sweep and
+   * storage-usage reconciliation (see media-store.ts's `reconcileStorageUsage`
+   * doc comment for why the incremental counter needs this backstop). Each
+   * tenant's media walk runs under its own `runWithTenant` — these two
+   * operations are the ones in this file that actually need tenant context,
+   * unlike the fast sweep's queue functions, which are deliberately global.
+   * One tenant's sweep failing (a locked file, a mid-flight write) is caught
+   * and logged per-tenant so it never skips every OTHER tenant's sweep in
+   * the same pass.
+   */
+  private async runMaintenanceSweep(): Promise<void> {
+    try {
+      const pruned = queue.prune()
+      if (pruned > 0) console.log(`[pool] pruned ${pruned} job row(s) past retention`)
+    } catch (err) {
+      console.warn('[pool] job retention prune failed:', (err as Error).message)
+    }
+
+    for (const tenant of tenants.list()) {
+      try {
+        await runWithTenant({ tenantId: tenant.id, userId: 'system', role: 'owner' }, async () => {
+          const swept = await sweepOrphanedMedia()
+          await reconcileStorageUsage()
+          if (swept.orphanedOriginals + swept.orphanedDerived + swept.orphanedCreatives > 0) {
+            console.log(`[pool] tenant ${tenant.id}: swept ${JSON.stringify(swept)}`)
+          }
+        })
+      } catch (err) {
+        console.warn(`[pool] maintenance sweep failed for tenant ${tenant.id}:`, (err as Error).message)
+      }
+    }
   }
 
   /**
@@ -177,10 +247,8 @@ class WorkerPool {
     const now = Date.now()
     for (const handle of this.handles) {
       const job = handle.currentJob
-      if (!job) continue
-
+      if (!job || !isJobHung(job, now, config.jobs.maxRuntimeMs)) continue
       const maxRuntimeMs = config.jobs.maxRuntimeMs[job.kind]
-      if (now - job.startedAt <= maxRuntimeMs) continue
 
       console.warn(
         `[pool] worker ${handle.id} job ${job.jobId} (${job.kind}) exceeded ${maxRuntimeMs}ms — killing and respawning`
@@ -391,6 +459,10 @@ class WorkerPool {
     if (this.watchdog) {
       clearInterval(this.watchdog)
       this.watchdog = null
+    }
+    if (this.maintenanceSweeper) {
+      clearInterval(this.maintenanceSweeper)
+      this.maintenanceSweeper = null
     }
 
     for (const handle of this.handles) {

@@ -241,6 +241,19 @@ export async function handleRenderJob(
     precomputedBackground,
   })
 
+  // Re-checked HERE, not just at the top: the render above (compositing, or
+  // an earlier attempt's wait on AI Extend) can take real time, during which
+  // the batch can be cancelled out from under an already-running job —
+  // `cancelBatch()` only touches 'pending'/'claimed' rows, deliberately
+  // leaving a 'running' one to finish rather than interrupting it unsafely.
+  // "Finish" must not mean "persist anyway": a cancelled batch's running job
+  // still completes its work (so no attempt is wasted and no error is
+  // logged), but its OUTPUT is discarded here rather than written to disk
+  // and the database, same as if it had been caught before starting.
+  if (context.batchId && queue.isBatchCancelled(context.batchId)) {
+    return { skipped: true, reason: 'batch cancelled' }
+  }
+
   const extension = result.mimeType === 'image/png' ? 'png' : 'jpg'
   const key = creativeKey(context.batchId ?? 'adhoc', `${imageId}_${templateId}`, extension)
   const { byteSize } = await writeFileAtomic('creatives', key, result.buffer, { overwrite: true })

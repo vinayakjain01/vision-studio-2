@@ -82,6 +82,11 @@ function tenantHandles(): Map<string, Db> {
   return global.__visionStudioTenantDbs
 }
 
+/** Test-only introspection: how many tenant handles this process currently has open. Not used by application code. */
+export function __openTenantHandleCount(): number {
+  return tenantHandles().size
+}
+
 function openTenantDb(tenantId: string): Db {
   const paths = tenantPaths(tenantId)
   fs.mkdirSync(path.dirname(paths.database), { recursive: true })

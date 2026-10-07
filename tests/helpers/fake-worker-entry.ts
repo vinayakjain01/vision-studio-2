@@ -11,6 +11,15 @@
  *                               process mid-job to test lease-based recovery.
  *   { action: 'fail' }        — throw immediately (poison-job testing).
  *   { action: 'succeed' }     — complete immediately.
+ *   { action: 'hang' }        — never resolves (no timer, no I/O wait) —
+ *                               simulates a job stuck in a native call with
+ *                               no cooperative cancellation point, for
+ *                               watchdog testing. The heartbeat keeps
+ *                               beating throughout, same as a real hang
+ *                               would (it's the JOB that's stuck, not the
+ *                               process) — reclaimStale() would never catch
+ *                               this on its own, which is the whole reason
+ *                               the watchdog exists.
  *
  * Config arrives the same way the real worker-entry does: a JSON CLI arg.
  */
@@ -59,9 +68,10 @@ async function runOne(kind: JobKind): Promise<boolean> {
 
   try {
     await runWithTenant({ tenantId: job.tenantId, userId: 'system', role: 'owner' }, async () => {
-      const payload = job.payload as unknown as { action: 'sleep' | 'fail' | 'succeed'; ms?: number }
+      const payload = job.payload as unknown as { action: 'sleep' | 'fail' | 'succeed' | 'hang'; ms?: number }
       if (payload.action === 'fail') throw new Error('poison job: always fails')
       if (payload.action === 'sleep') await sleep(payload.ms ?? 0)
+      if (payload.action === 'hang') await new Promise(() => {}) // never resolves
       // 'succeed' and post-sleep both fall through to completion.
     })
     queue.complete(job.id, cfg.workerId, { ok: true })

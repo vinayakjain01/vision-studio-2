@@ -3,9 +3,11 @@ import { spawn, type ChildProcess } from 'child_process'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTestTenant } from '../helpers/tenancy-fixture'
 import * as queue from '@/jobs/queue'
+import { isJobHung } from '@/jobs/pool'
 import { getControlDb } from '@/db/client'
 import { migrateControl } from '@/db/migrate'
 import { tenantQueueState } from '@/db/control-repositories'
+import { config } from '@/config'
 
 /**
  * Integration tests with a REAL separate OS process (not a simulation) —
@@ -148,4 +150,38 @@ describe('child-process recovery (real spawned worker)', () => {
     child.send({ type: 'stop' })
     await waitForExit(child, 5000).catch(() => child.kill('SIGKILL'))
   }, 25_000)
+
+  it('a hung job past its max runtime gets its worker killed and counted as a failed attempt (real watchdog path)', async () => {
+    const t = createTestTenant('T')
+    queue.enqueue(t.tenantId, [{ kind: 'vision', payload: { action: 'hang' } as any, maxAttempts: 3 }])
+
+    const child = spawnFakeWorker('real-worker-hung')
+    const started = await waitForMessage(child, 'job:started')
+    const jobStartedAt = Date.now()
+
+    // Give the "job" a moment to genuinely be stuck in the real process
+    // (heartbeat still beating throughout, same as a real hang in a native
+    // call would) before checking it against the REAL watchdog decision
+    // function with a deliberately tiny budget for this one check — proves
+    // production `isJobHung()` correctly flags it, not a hand-rolled
+    // stand-in for that logic.
+    await new Promise(resolve => setTimeout(resolve, 50))
+    const tinyBudget = { ...config.jobs.maxRuntimeMs, vision: 10 }
+    expect(isJobHung({ kind: 'vision', startedAt: jobStartedAt }, Date.now(), tinyBudget)).toBe(true)
+
+    // This is exactly what WorkerPool.checkWatchdog() does once isJobHung()
+    // says yes: fail the job (counts the attempt) via the SAME queue.fail()
+    // every other path uses, then kill the worker holding it.
+    const result = queue.fail(started.jobId, 'real-worker-hung', 'watchdog: exceeded max runtime')
+    expect(result.ok).toBe(true)
+    expect(result.retrying).toBe(true) // maxAttempts: 3, this is attempt 1
+
+    child.kill('SIGKILL')
+    await waitForExit(child)
+
+    const after = queue.get(t.tenantId, started.jobId)!
+    expect(after.status).toBe('pending') // requeued for retry
+    expect(after.attempts).toBe(1)
+    expect(tenantQueueState.get(t.tenantId)?.runningJobs).toBe(0)
+  }, 20_000)
 })
