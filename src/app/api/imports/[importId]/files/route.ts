@@ -34,6 +34,7 @@ import { ingestFiles, type IncomingFile } from '@/import/import-service'
 import { imports } from '@/db/repositories'
 import { MAX_REQUEST_BYTES, MAX_FILE_BYTES, normalizePath, baseName } from '@/import/file-rules'
 import { assertImagesPerBatch, assertStorageBudget, tryAcquireUploadSlot, releaseUploadSlot } from '@/jobs/quota'
+import { assertDiskSpaceAvailable } from '@/jobs/disk-guard'
 import { currentTenant } from '@/tenancy/context'
 import { tenantTmpDir } from '@/storage/media-store'
 import { handler, ok, badRequest, notFound } from '@/lib/api-handler'
@@ -67,6 +68,11 @@ export const POST = handler(
     if (record.status === 'completed' || record.status === 'cancelled') {
       return badRequest(`import is ${record.status} and no longer accepts files`)
     }
+
+    // Cheapest, most server-wide check first — before even touching a slot
+    // or streaming a byte. A full disk is a backstop against every tenant's
+    // uploads failing at once, not something a tenant's own quota controls.
+    await assertDiskSpaceAvailable()
 
     const tenantId = currentTenant().tenantId
     const tmpDir = tenantTmpDir()

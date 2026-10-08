@@ -311,7 +311,13 @@ class WorkerPool {
   private spawn(id: string, kinds: JobKind[], restarts: number): WorkerHandle {
     const { spawn } = require('node:child_process') as typeof import('child_process')
 
-    const entry = path.join(process.cwd(), 'src', 'jobs', 'worker-entry.ts')
+    // Test-only escape hatch: lets tests/jobs/graceful-shutdown.test.ts point
+    // a REAL WorkerPool at the lightweight fake-worker-entry.ts test harness
+    // instead of the real worker (which would load real ONNX models) — never
+    // set outside tests, so production always resolves the real path below.
+    const entry =
+      process.env.VISION_STUDIO_WORKER_ENTRY_OVERRIDE ||
+      path.join(process.cwd(), 'src', 'jobs', 'worker-entry.ts')
     const workerConfig = {
       workerId: id,
       kinds,
@@ -463,6 +469,17 @@ class WorkerPool {
     }
   }
 
+  /**
+   * Graceful shutdown (P6). Workers already stop claiming new work the
+   * instant they see `{type:'stop'}` — `worker-entry.ts`'s loop only checks
+   * `running` BETWEEN jobs, never interrupts one in flight (see its own
+   * comment) — so this function's job is purely about the jobs already in
+   * progress: give them `config.jobs.shutdownGraceMs` to finish normally,
+   * and for whichever ones don't make it, explicitly hand the job back to
+   * 'pending' (no attempt consumed — see `returnToPending`'s doc comment)
+   * before killing the worker, rather than leaving it to the much slower,
+   * attempt-consuming stale-claim sweep to eventually notice.
+   */
   async stop(): Promise<void> {
     if (!this.started) return
     this.started = false
@@ -488,16 +505,21 @@ class WorkerPool {
       }
     }
 
-    // Give workers a moment to finish the job in hand, then kill.
     await Promise.all(
       this.handles.map(
         handle =>
           new Promise<void>(resolve => {
             if (handle.state === 'stopped') return resolve()
             const timer = setTimeout(() => {
+              // Still holding a job past the grace period — give it back
+              // untouched rather than let it ride out to a lease-expiry
+              // reclaim (which would count an attempt against it).
+              if (handle.currentJob) {
+                queue.returnToPending(handle.currentJob.jobId, handle.id)
+              }
               handle.child.kill('SIGKILL')
               resolve()
-            }, 8000)
+            }, config.jobs.shutdownGraceMs)
             handle.child.once('exit', () => {
               clearTimeout(timer)
               resolve()

@@ -85,6 +85,12 @@ const ALLOWED = [
   'scripts/tenants-migrate-legacy.ts',
   'scripts/bench-memory.ts',
   'scripts/bench-memory-server.ts',
+  // Backup/restore (P6): opens arbitrary SQLite files directly — backup
+  // snapshots, a restore target directory — that are never the live,
+  // ambient data directory's own handles at all, so the normal
+  // getDb()/openTenantDbById() connection pool does not apply here by
+  // construction. See scripts/lib/backup-restore.ts's module doc.
+  'scripts/lib/backup-restore.ts',
 ]
 
 const SCAN_ROOTS = ['src', 'scripts']

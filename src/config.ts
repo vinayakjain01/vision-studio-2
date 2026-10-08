@@ -218,6 +218,28 @@ export const config = {
      */
     uploadTmpTtlMs: int(process.env.UPLOAD_TMP_TTL_MS, 6 * 60 * 60 * 1000),
     /**
+     * P6: on SIGTERM, workers stop claiming new jobs immediately (see
+     * worker-entry.ts's loop — it already only checks between jobs, never
+     * interrupts one in progress) and whatever's already running gets this
+     * long to finish before being killed and its job handed back to
+     * 'pending' untouched (no attempt consumed — this is an orderly
+     * shutdown, not a crash). Docker/the orchestrator's own stop timeout
+     * must be configured LONGER than this or SIGKILL arrives first and
+     * skips the graceful path entirely — see docs/OPERATIONS.md.
+     */
+    shutdownGraceMs: int(process.env.SHUTDOWN_GRACE_SECONDS, 30) * 1000,
+    /**
+     * P6: below this much free space on the DATA VOLUME, new uploads are
+     * refused outright with a clear error, before writing a single byte —
+     * a full disk mid-write corrupts nothing (writes are atomic renames,
+     * see media-store.ts), but it does turn EVERY tenant's uploads and
+     * every running job's output into silent failures at once. Checked
+     * against the volume `config.paths.dataDir` lives on, not a tenant's
+     * own storage quota — this is a server-wide resource, not something
+     * raising one tenant's quota would fix.
+     */
+    diskMinFreeBytes: int(process.env.DISK_MIN_FREE_GB, 2) * 1024 * 1024 * 1024,
+    /**
      * Per-kind watchdog: a job whose 'running' status outlives this is
      * presumed hung (not merely slow — `background_fill`'s own wait-for-
      * dependency pattern never holds 'running' status while waiting, see

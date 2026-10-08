@@ -1,12 +1,6 @@
-# Vision Studio — production image for a container host you control (e.g.
-# DigitalOcean, per docs/DEPLOY.md).
-#
-# NOT currently used to deploy to Render — render.yaml uses Render's own
-# native Node build environment instead, after a custom image built here
-# crashed `better-sqlite3` at start-up on Render specifically (native binary
-# mismatch, not reproducible or diagnosable from outside their build
-# infrastructure). Kept for a host where you control the exact base image and
-# that class of mismatch does not apply.
+# Vision Studio — production image for a container host you control (a VPS,
+# DigitalOcean/Linode/Hetzner droplet, etc. — see docs/DEPLOY.md for the full
+# first-deploy walkthrough with Caddy in front of it).
 #
 # Single stage, deliberately. The obvious optimisation is a multi-stage build
 # that prunes devDependencies out of the final image, but two things in this
@@ -17,9 +11,9 @@
 #     about what the workers import at runtime, and getting that wrong is a
 #     production-only crash that never reproduces locally. Keeping the full
 #     dependency tree removes that whole class of mistake.
-#  2. This is a low-traffic, internal team tool. A few hundred extra MB of
-#     image size costs nothing that matters here; a subtle runtime failure
-#     from an over-pruned image does.
+#  2. This app's traffic profile does not justify shaving image size at the
+#     cost of that risk. A subtle runtime failure from an over-pruned image
+#     costs far more than a few hundred extra MB.
 #
 # Base is `node:20-slim` (Debian, glibc) rather than an Alpine image: sharp,
 # better-sqlite3, onnxruntime-node and @napi-rs/canvas all ship prebuilt
@@ -47,19 +41,18 @@ WORKDIR /app
 
 # Installed separately from the rest of the source so this layer only
 # rebuilds when dependencies actually change, not on every code edit.
+# `npm ci` (not `npm install`) — always installs exactly what's in
+# package-lock.json, never resolves or writes a new lockfile.
 COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
 
 # Model weights are baked into the IMAGE at build time, not fetched at
-# container start. Render's free tier has no persistent disk, so the
-# container's filesystem resets on every restart — including every time the
-# service wakes from its 15-minute idle sleep. Fetching ~160MB from Hugging
-# Face on every wake would make cold starts far slower and depends on that
-# endpoint being reachable at exactly the wrong moment. Baking them in means
-# the image is self-contained: identical on every restart, no network
-# dependency at boot.
+# container start — the whole point being a container's filesystem can be
+# replaced (a redeploy, a fresh host) without re-downloading ~160MB from
+# Hugging Face at exactly the wrong moment (a cold start an operator is
+# actively waiting on).
 RUN npm run models:fetch
 
 RUN npm run build
@@ -67,10 +60,30 @@ RUN npm run build
 ENV NODE_ENV=production
 EXPOSE 3000
 
-# `db:migrate` runs on every container start, not just the first. It only
-# creates tables that do not already exist, so this is safe to repeat — and
-# on the free tier it is NECESSARY every time, since ./data resets along with
-# the rest of the filesystem on each restart. On a host with a real
-# persistent disk mounted at ./data, this same command is still correct: it
-# is a no-op against an already-migrated database.
-CMD ["sh", "-c", "npm run db:migrate && npm start"]
+# Non-root. `node:20-slim` already ships a `node` user (uid 1000) for exactly
+# this — no need to create a new one. `/app/data` is where the SQLite files
+# and every tenant's media live (see src/config.ts's `dataDir`, normally a
+# mounted volume in production); it has to be writable by this user BEFORE
+# the volume is mounted over it, because a volume mount takes on whatever
+# ownership the mount point already has only on FIRST creation — fixing
+# permissions after the fact on an existing volume is an operator's job (see
+# docs/OPERATIONS.md), not this image's.
+RUN mkdir -p /app/data && chown -R node:node /app/data
+USER node
+
+COPY --chown=node:node docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
+# Hits the real readiness check (src/app/api/health/route.ts) — a writable
+# control.db AND a writable data directory, not just "the process is up".
+# node's own fetch (global since Node 18) avoids needing curl/wget installed
+# in the image just for this.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD node -e "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+# Invokes next's own binary directly rather than `npm start` — one fewer
+# process layer between PID 1 and the actual server, which
+# docker-entrypoint.sh's `exec` depends on for SIGTERM to reach the right
+# process (see that file's own comment, and src/jobs/shutdown.ts).
+CMD ["node_modules/.bin/next", "start"]

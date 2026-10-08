@@ -391,7 +391,17 @@ export async function handleBackgroundFillJob(
   }
 
   const result = await dispatchGenerativeFill(
-    { tenantId: currentTenant().tenantId },
+    {
+      tenantId: currentTenant().tenantId,
+      // scripts/loadtest-multitenant.ts's real mode only — simulates
+      // Cloudinary's latency/429 behavior without a network call or a real
+      // credit. Never set outside that script; see
+      // ./loadtest-mock-ai-extend.ts's own doc comment.
+      provider:
+        process.env.VISION_STUDIO_LOADTEST_MOCK_AI_EXTEND === '1'
+          ? (await import('./loadtest-mock-ai-extend')).createMockAiExtendProvider()
+          : undefined,
+    },
     {
       photo: target.photo,
       canvasWidth: target.canvasWidth,

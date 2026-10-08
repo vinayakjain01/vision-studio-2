@@ -1,87 +1,42 @@
-# Multi-tenancy — Phase 0 design note
+# Multi-tenancy — architecture
 
-Status: **Phase 0 (read + design) complete.** Nothing in `src/` has been
-changed by this phase — this document is the only output. Sections marked
-**DECISION NEEDED** are architecture-affecting choices the spec asked us to
-surface before diverging; P1 should not start until these are confirmed.
+Status: **Implemented through P6.** Everything below describes the system
+as it actually runs today, confirmed against the source — not a plan. The
+original Phase 0 investigation and the design decisions it produced are kept
+at the bottom (Appendix A/B) as the historical record of *why* the
+architecture ended up this shape; every decision flagged there has since
+been resolved and built exactly as described unless a later section says
+otherwise.
 
-This was produced by reading the actual code (job queue, worker pool, DB
-layer, storage layer, every API route, the render/export pipeline, and the
-Cloudinary integration) rather than assuming the spec's description matches
-what's there. Where it didn't match, that's called out explicitly below.
-
----
-
-## 1. What the code actually does today (confirmed by reading it)
-
-**Fully single-tenant, zero auth, as documented.** `docs/DEPLOY.md`,
-`render.yaml`, and a comment in `config.ts` already say "no login." No
-`middleware.ts`, no auth library in `package.json`, no `users` table. Every
-one of the 25 API routes under `src/app/api/` fetches by a client-supplied
-ID with no ownership check — this isn't a gap to patch per-route, it's the
-universal current behavior, confirmed route by route.
-
-**Good news — more infrastructure already exists than the spec assumed:**
-
-- **Priority already exists** (`jobs.priority`, lower runs sooner), but as a
-  single static integer with no weight and no per-tenant fairness. Claiming
-  is `ORDER BY priority, created_at` — strict FIFO within a priority level.
-- **Leases/heartbeats already exist.** Workers heartbeat every 5s;
-  `reclaimStale()` requeues jobs whose heartbeat is older than 5 minutes, run
-  at pool start and every 60s. Gaps: no explicit lease-expiry column
-  (staleness is "heartbeat age" with one global threshold), and
-  `complete()`/`fail()` don't check `worker_id`, so a reclaimed-but-still-alive
-  worker can race a new claimant.
-- **Atomic claiming already works**, via a SELECT-candidates-then-per-row-
-  `UPDATE…WHERE status='pending'` inside an `IMMEDIATE` transaction. Safe
-  under SQLite's single-writer guarantee. This guarantee is **per SQLite
-  file** — important once jobs move to a separate control-plane DB from
-  tenant data (see §3).
-- **OS-level worker priority already exists** —
-  `os.setPriority(child.pid, PRIORITY_BELOW_NORMAL)` is already called on
-  every spawned worker in `pool.ts`. The spec's §5 ask here is already done;
-  only the *web process's own* priority (left at default/normal) might
-  warrant an explicit `os.setPriority` call for symmetry, though that's
-  arguably unnecessary — leaving the web process at normal and workers below
-  it already produces the desired relative priority.
-- **A version-tracked migration runner already exists**
-  (`src/db/migrate.ts`), and it already takes a `Db` parameter rather than
-  assuming a singleton — it's already shaped for "run this against any
-  handle," which is exactly what per-tenant lazy migration needs.
-- **No module-level caches of decoded images or analysis results** were
-  found anywhere in `src/vision/`. The ONNX session manager (one session per
-  model per process) is the only long-lived vision state, and it's pure
-  model weights — safe to share across tenants as-is.
-
-**Real gaps the spec correctly anticipated:**
-
-- `media-store.ts`'s `ROOTS` and `config.paths.*` are frozen at module load
-  from one `dataDir` — not per-call, so tenant-scoping requires turning
-  these into functions, not just adding a parameter somewhere.
-- The AI-Extend derived-asset cache key (`sourceHash` + prompt) has no
-  tenant component — exactly the cross-tenant leak (and paid-credit
-  double-charge prevention... working in reverse) the spec's "dedup is
-  per-tenant only" rule exists to prevent.
-- The global vision-analysis cache (`vision_analyses` keyed on
-  `(source_hash, engine_version)`) would give tenant B a cache hit on tenant
-  A's analysis of identical photo bytes if they ever shared a DB — confirmed
-  as a real hazard, not hypothetical, since stock photos and common product
-  shots collide on hash routinely.
-- Bulk ZIP download and export conversion both **fully buffer in memory**
-  despite a comment in the download route claiming "streamed" (that comment
-  only describes the output side — every input file is fully read, format-
-  converted, and held as a `Buffer` before any bytes are added to the zip).
-  Upload ingestion also fully buffers (`request.formData()`) before checking
-  size caps, so the cap doesn't bound memory, only reject after the fact.
+For day-to-day operator procedures (create/suspend/delete a tenant, backup/
+restore, tuning, reading the admin metrics) see `docs/OPERATIONS.md`. For
+environment variables and first-deploy steps see `docs/DEPLOY.md`. This
+document is architecture only.
 
 ---
 
-## 2. Target layout
+## Quick reference
+
+- **Data layout** → §2
+- **Request-scoped tenant context** → §3
+- **Fair-share job scheduler** → §4
+- **Quotas** → §5
+- **AI Extend (Cloudinary) dispatcher** → §6
+- **Security model** → §7
+- **Legacy (single-tenant → multi-tenant) migration** → §8
+- **Operational resilience added in P6** → §9
+- **Manual two-tenant QA checklist** → §10
+
+---
+
+## 2. Data layout
 
 ```
 data/
   control.db                         # users, tenants, memberships, sessions,
-                                      # jobs (global queue), quotas, usage, audit
+                                      # jobs (global queue), tenant_queue_state,
+                                      # quotas, usage_counters, login_attempts,
+                                      # audit_log, ai_extend_global_state
   tenants/
     <tenantId>/
       app.db                         # products, images, vision_analyses,
@@ -92,138 +47,28 @@ data/
 models/                              # UNCHANGED — global, read-only, shared
 ```
 
-`modelDir` stays exactly as it is today: ONNX weights are not tenant data,
-and nothing about loading them needs to change.
+`modelDir` is global and read-only — every tenant's vision analysis runs
+through the same shared ONNX weights, never duplicated per tenant.
+
+Every tenant-scoped path is computed on demand by `tenantPaths(tenantId)`
+(`src/config.ts`), never cached at module load — this is what makes the data
+root a function of *which* tenant is asking rather than a fixed constant.
+`tenantId` is validated against `^[A-Za-z0-9_-]+$` (`assertValidTenantId`)
+before it is ever joined into a filesystem path, independent of
+`media-store.ts`'s own content-hash key validation — this guards the ROOT,
+not a key under it, and rejects anything that isn't exactly one of the IDs
+`newId()` mints.
+
+`control.db` is the ONLY file ever opened without a tenant in scope — it
+holds nothing but control-plane rows (identity, billing/quota state,
+scheduling, audit). Every tenant's actual business data (products, photos,
+templates, generated creatives) lives in that tenant's own `app.db` and
+`media/` tree and is never readable from a connection that doesn't already
+know that tenant's ID.
 
 ---
 
-## 3. Conflicts between the spec and the actual code — **DECISIONS NEEDED**
-
-### 3.1 The `jobs.batch_id → batches` foreign key cannot survive the DB split
-
-**The conflict:** `jobs` has `batch_id TEXT REFERENCES batches(id) ON DELETE
-CASCADE`, and `queue.cancelBatch()` / `isBatchCancelled()` read the
-`batches` table directly, assuming it's in the same database file as `jobs`.
-The spec puts `jobs` in `control.db` and `batches` in each tenant's
-`app.db`. SQLite foreign keys cannot span separate database files opened as
-independent connections (ATTACH-based cross-DB FKs exist but aren't
-reliably enforced by better-sqlite3 and would reintroduce exactly the kind
-of implicit cross-tenant coupling we're trying to eliminate — not
-recommended).
-
-**Recommended resolution:** Drop the FK entirely. `jobs` in `control.db`
-gets a plain `(tenant_id, batch_id)` pair with no referential constraint.
-Cascade-on-delete becomes an explicit two-step **application-level**
-operation, ordered so a crash mid-operation fails safe:
-
-1. Cancel/delete the batch's jobs in `control.db` first (by
-   `tenant_id + batch_id`).
-2. Delete the batch row in the tenant's `app.db` second.
-
-If step 1 succeeds and step 2 is interrupted, the batch row survives with no
-jobs attached (harmless — it just looks "stuck," discoverable and
-re-deletable). If step 1 is interrupted, nothing has changed. The failure
-mode that must never happen — a deleted batch with jobs still silently
-running against it — is excluded either way. `getBatchProgress` and
-`listByBatch` become plain filtered queries against `control.db` by
-`(tenant_id, batch_id)` — no cross-DB JOIN needed, since progress is always
-looked up for one specific batch the caller already knows the ID of.
-
-**This changes the architecture as the spec anticipated it might; flagging
-per the Phase 0 contract.** If a different resolution is preferred (e.g.
-keeping a `jobs` *pointer* table inside each tenant DB for cascade safety,
-with `control.db` holding only the dispatch-relevant columns), say so before
-P1 — the migration script and `generation-service.ts` call sites differ
-depending on which is chosen.
-
-### 3.2 Weighted fair-share scheduling needs a concrete claim mechanism, not just a policy statement
-
-**The conflict:** the spec describes the policy ("choose the tenant with
-lowest `running_jobs / weight` among those with queued work") but the
-current `claim()` is a single flat query (`ORDER BY priority, created_at`)
-with no notion of tenants at all. Computing `running_jobs` per tenant via a
-live `GROUP BY` over the full `jobs` table on every single claim (workers
-poll every 250ms, N of them) does not scale and reintroduces exactly the
-kind of expensive-query-per-claim pattern that makes fairness logic a
-performance risk.
-
-**Recommended resolution:** a small denormalized `tenant_queue_state` table
-in `control.db`:
-
-```sql
-CREATE TABLE tenant_queue_state (
-  tenant_id     TEXT PRIMARY KEY,
-  weight        REAL NOT NULL DEFAULT 1.0,
-  running_jobs  INTEGER NOT NULL DEFAULT 0
-);
-```
-
-`running_jobs` is incremented transactionally inside the same `IMMEDIATE`
-transaction that claims a job, and decremented inside `complete()`/`fail()`/
-`reclaimStale()`. The claim query becomes: among tenants with at least one
-`pending` job of the requested kind, pick the one with the lowest
-`running_jobs / weight` (ties broken by the oldest `pending` job's
-`created_at`), then claim that tenant's oldest eligible job. This is one
-indexed join instead of an aggregate scan, and it's the standard shape for
-weighted fair queuing over a small number of active tenants. Interactive vs.
-bulk priority classes sit on top of this unchanged (priority is still
-checked first, within a tenant's own jobs).
-
-**Not asking for a decision here** — this is an implementation detail
-within the stated policy, included for concreteness since "weighted fair
-share" alone isn't buildable without picking a bookkeeping mechanism.
-
-### 3.3 AsyncLocalStorage cannot cross the worker process boundary — already correctly anticipated by the spec
-
-Confirmed: worker children are separate OS processes (`child_process.spawn`),
-so no in-process context (ALS or otherwise) reaches them. The spec already
-says the job message must carry `tenantId` and the worker binds its own
-context — this matches what the code requires exactly, so no conflict, just
-confirming the job row needs a `tenant_id` column threaded into the
-`job:done`/`job:failed` IPC messages too (today's payloads carry
-`imageId`/`sourceHash`/`templateId` etc. but nothing identifying a tenant).
-
-### 3.4 Cloudinary stays ONE shared account — confirming, not conflicting
-
-The spec's wording ("per-tenant concurrency cap") could be misread as
-"per-tenant credentials." Confirmed from the code: `cloudinary.config()` is
-a process-global SDK singleton, called once. Re-reading the full spec
-section, it only asks for a **global** concurrency limit + rate limiter with
-a **per-tenant cap layered on top** (a quota, not separate credentials) —
-consistent with one shared paid account. Documenting this explicitly so the
-dispatcher design (§5) isn't built around per-tenant credential swapping,
-which the SDK doesn't support without re-`config()`-ing between calls (racy
-across concurrent workers sharing the process).
-
-### 3.5 Streaming vs. moving CPU work to the worker pool for downloads/exports
-
-The spec says both "the web process does no heavy CPU work" and "convert
-buffer-everything-in-memory behavior to streaming" for the same routes.
-These aren't quite the same fix. `sharp`'s encode/resize work runs in
-libvips' native thread pool, off Node's event loop — it doesn't block other
-requests the way synchronous JS would, but it does consume CPU cores in the
-web process, and the size-budget search does ~7 full decode+encode passes
-per image today.
-
-**Recommended resolution:** fix the memory problem (stream the ZIP
-file-by-file via a library that supports lazy entries — `archiver` or `yazl`
-— instead of JSZip's buffer-everything-then-generate; stream uploads to a
-tenant `tmp/` file instead of buffering `formData()`), and treat the CPU
-question as a quota/scheduling concern rather than a hard relocation: cap
-concurrent export conversions per tenant (reusing the same quota mechanism
-as job concurrency) rather than moving every single-photo export through
-the full job-queue-and-poll cycle, which would turn a sub-second download
-into a multi-second round trip for no real benefit at typical bulk-download
-sizes. Large bulk ZIP generation (hundreds of images) is the case worth
-moving to a background job with a polled "ready" state; a single creative's
-export is not. **Flagging this as a judgment call, not re-litigating it
-silently** — if "no heavy CPU work in the web process" is meant literally
-even for single-file exports, that's a larger UX change (export becomes
-async everywhere) worth confirming before P4.
-
----
-
-## 4. TenantContext
+## 3. Request-scoped tenant context
 
 ```ts
 // src/tenancy/context.ts
@@ -246,80 +91,269 @@ export function currentTenant(): TenantContext {
 }
 ```
 
-- Set once per request, in a single middleware/wrapper around route
-  handlers (the existing `handler()` in `src/lib/api.ts` is the natural
-  place — it already wraps every route for error handling, confirmed by the
-  investigation as the one place all 25 routes already funnel through).
-- `db/client.ts`'s `getDb()` reads `currentTenant().tenantId`, looks up (or
-  lazily opens) that tenant's handle in the LRU, and **throws if no context
-  is set** — fail closed, per the spec. No default tenant, ever.
-- `media-store.ts`'s `ROOTS` becomes a function of `currentTenant()` instead
-  of a module-level constant computed once at import time.
-- Workers: the job row's `tenant_id` is read in `runOne()`, and the handler
-  body is wrapped in `runWithTenant({tenantId, ...}, () => handle(job))` —
-  this is where the worker "binds its own context" the spec describes.
-- `vision-service.ts`'s engine singleton keeps its shared ONNX provider but
-  gets its `cache` and `maskSink` ports reconstructed per tenant (cheap —
-  they're just closures over the tenant's `getDb()`/media root, not new
-  model instances) rather than built once globally.
+- Set once per request inside `handler()` (`src/lib/api-handler.ts`), the one
+  wrapper every non-public API route funnels through — session is resolved
+  from the cookie, the route body runs inside `runWithTenant(resolved.tenant,
+  ...)`, and a tenant-less session (a platform admin with no personal
+  workspace) is rejected with "this account has no workspace" rather than
+  running with no context. `adminHandler()` (`src/lib/admin-handler.ts`) is
+  the deliberate exception — admin routes mostly read/write control-plane
+  data with no ambient tenant, and the few that touch one specific tenant's
+  data name it explicitly via `runWithTenant({tenantId: <that tenant>, ...})`
+  rather than relying on an ambient one.
+- `src/db/client.ts`'s tenant DB accessor reads `currentTenant().tenantId`,
+  opens (or reuses, from a small LRU) that tenant's `app.db` handle, and
+  **throws if no context is set** — fail closed, no default tenant, ever.
+- `src/storage/media-store.ts`'s media roots are a function of
+  `currentTenant()`, not a module-level constant.
+- **Workers run in separate OS processes** (`child_process.spawn`), so no
+  in-process context — `AsyncLocalStorage` included — reaches them. Every
+  job row carries its own `tenant_id`; the worker reads it off the claimed
+  job and wraps the handler body in `runWithTenant({tenantId, ...}, () =>
+  handle(job))` itself, binding a fresh context per job rather than
+  inheriting one from anywhere.
+- The vision-analysis engine's ONNX session manager stays one shared
+  singleton (pure model weights, safe across tenants) — only its cache and
+  mask-sink ports are reconstructed per tenant, which is cheap (closures over
+  that tenant's DB handle and media root, not new model instances).
 
-**Lint guard** (§7 of the spec): a script that greps for `getDb(` and
-`ROOTS[` outside `src/db/client.ts` / `src/storage/media-store.ts`, and for
-any new raw `new Database(` outside the client module (closing the exact
-hole `scripts/clear-queue.js` currently represents). Wired into
-`npm run lint` or a pre-commit check in P2.
+**Lint guard**: `scripts/check-tenancy-boundaries.ts` (run as part of
+`npm run lint`, before eslint) greps the whole tree for direct DB/storage-
+root access — raw `new Database(...)`, the tenant DB accessor, or a media
+root — outside the small allow-list of modules that are supposed to touch
+them (`src/db/repositories.ts`, `src/db/control-repositories.ts`,
+`src/storage/media-store.ts`, and a handful of named scripts in
+`scripts/lib/tenancy-boundaries.ts`'s `ALLOWED` list, each there for a
+specific, commented reason — e.g. a backup script needs a raw connection to
+run `better-sqlite3`'s online backup API). Fails the build the same way a
+type error would. This is the mechanism that keeps "every tenant access goes
+through one audited choke point" true over time instead of being a one-time
+review finding.
 
 ---
 
-## 5. Scheduler (expands §3.2)
+## 4. Fair-share job scheduler
 
 ```
 control.db:
   jobs (id, tenant_id, kind, priority_class, status, attempts, max_attempts,
-        worker_id, lease_expires_at, heartbeat_at, dedupe_key UNIQUE(tenant_id, dedupe_key),
-        payload, created_at, updated_at, completed_at, error)
-  tenant_queue_state (tenant_id, weight, running_jobs)
+        worker_id, claimed_at, heartbeat_at, lease_expires_at, available_at,
+        dedupe_key UNIQUE(tenant_id, dedupe_key),
+        payload, created_at, updated_at, started_at, completed_at, error)
+  tenant_queue_state (tenant_id PRIMARY KEY, weight, running_jobs)
 ```
 
-- `dedupe_key` uniqueness moves from global to `(tenant_id, dedupe_key)` —
-  fixes the cross-tenant job-suppression hazard found in `worker.ts`'s
-  background-fill dedupe key (`bgfill:${sourceHash}:${templateId}`, today
-  global).
-- Priority classes (`interactive` / `bulk`) are a column, checked before the
-  fairness ordering within a tenant's own queue — a tenant's own interactive
-  job still jumps their own bulk backlog, independent of fairness across
-  tenants.
-- Reserve ≥1 render slot for interactive by having render workers prefer
-  `priority_class='interactive'` first regardless of which tenant, falling
-  back to the fairness-ordered bulk pick only when no interactive work is
-  queued anywhere.
-- `reclaimStale()` additionally decrements `tenant_queue_state.running_jobs`
-  for the tenant whose lease expired.
-- Startup memory-budget check: extend `defaultConcurrency()` (which already
-  reads `process.constrainedMemory()` / `os.availableParallelism()`) to also
-  account for per-tenant-handle `cache_size` (today 32MB/handle) × the
-  planned LRU size, so the vision-worker count it computes doesn't leave no
-  headroom for open tenant DB handles.
+`claim(kind, workerId)` (`src/jobs/queue.ts`) is the whole scheduler in one
+function:
+
+1. Try `claimCandidate(kind, 'interactive')` first; only if nothing
+   interactive is queued anywhere, fall back to `claimCandidate(kind,
+   'bulk')`. Interactive work from ANY tenant is always tried before bulk
+   work from ANY tenant — a steady stream of bulk jobs can never make an
+   interactive request (a single-photo generate) wait behind it.
+2. Within a priority class, `claimCandidate` lists every `active` tenant
+   with at least one queued job, ordered by `running_jobs / weight`
+   ascending (ties broken by that tenant's oldest queued job), and probes
+   tenants in that order until one has a claimable job. This is the weighted
+   fair-share pick — a tenant currently running fewer jobs relative to its
+   weight is always preferred over one running more, regardless of how many
+   jobs either has *queued*. `weight` defaults to `1.0`; a higher weight (set
+   via the admin console) gives a tenant a proportionally larger share of
+   worker time without starving anyone else.
+3. The claim itself ( `UPDATE jobs SET status='claimed', ... WHERE id = ?
+   AND status = 'pending'`) and the `tenant_queue_state.running_jobs`
+   increment happen inside one `BEGIN IMMEDIATE` transaction — the whole
+   probe-then-update is serialized by SQLite's single-writer guarantee, so
+   two workers polling at once can never both claim the same job, and
+   `running_jobs` can never drift from "jobs actually claimed-or-running
+   right now" because of a race.
+4. `running_jobs` is decremented in exactly the same transaction style
+   inside `complete()`, `fail()`, `cancelAll()`, `reclaimStale()`, and the
+   graceful-shutdown `returnToPending()` path (P6) — every code path that
+   can end a job's "counted as running" state touches this counter in the
+   same place, so it can never go permanently stale.
+5. `tenants.status = 'active'` is part of the candidate query itself (a join,
+   not a post-filter) — a suspended or pending-deletion tenant's queued jobs
+   are simply invisible to `claim()` without being deleted; resuming the
+   tenant makes them claimable again with no other change.
+6. `dedupe_key` uniqueness is `(tenant_id, dedupe_key)`, not global — two
+   tenants requesting AI Extend on visually-identical stock photography
+   (same `sourceHash`) never collide on each other's in-flight dedup key.
+7. A `'bulk'` job pending longer than `BULK_MAX_WAIT_SECONDS` (default 900s)
+   is promoted to `'interactive'` class by the periodic sweep
+   (`promoteAgedBulkJobs`), so a bulk job can never starve indefinitely even
+   under constant interactive pressure from every tenant at once — it's a
+   backstop, not the common case.
+8. `reclaimStale()` requeues any job whose lease (`lease_expires_at`, set at
+   claim time to `now + JOB_STALE_CLAIM_MS`, refreshed on every heartbeat)
+   has expired — a crashed or killed worker's job comes back to `pending`
+   automatically, decrementing `running_jobs` for its tenant in the same
+   step.
+
+Two sweep cadences run in `WorkerPool` (`src/jobs/pool.ts`): a **fast** sweep
+every 60s doing only cheap indexed SQL (`reclaimStale`,
+`reconcileRunningJobs`, `promoteAgedBulkJobs`), and a **slow** sweep every
+`JOB_MAINTENANCE_SWEEP_INTERVAL_MS` (default 30 min) doing real disk work
+(job-row retention pruning, the per-tenant media orphan sweep, storage-usage
+reconciliation).
+
+---
+
+## 5. Quotas
+
+`control.db`'s `quotas` table holds one admin-editable row per tenant
+(`maxQueuedJobs`, `maxImagesPerBatch`, `maxConcurrentUploads`,
+`maxStorageBytes`, `maxAiExtendPerMonth`). `src/jobs/quota.ts` is the only
+place these are enforced, and every check happens **before** work is
+accepted, never inside a worker:
+
+| Check | When | Code |
+|---|---|---|
+| `assertCanEnqueue` | before any jobs are inserted (vision analysis, batch creative generation) | `max_queued_jobs` |
+| `assertImagesPerBatch` | before an import ingests files, against the import's *cumulative* total, not just this request | `max_images_per_batch` |
+| `assertStorageBudget` | before accepting an upload's bytes, against the tracked storage-usage gauge | `max_storage_bytes` |
+| `tryAcquireUploadSlot` / `assertUploadSlotAvailable` | per upload request, in-process counter (not a DB row — an upload is a synchronous HTTP request on this one server process, never a worker) | `max_concurrent_uploads` |
+
+Every violation throws `QuotaExceededError` with a stable `code` plus the
+limit and current usage — `mapKnownError()` (`src/lib/api-handler.ts`) turns
+that into a 429 with `{error, code, limit, current}`, so the UI renders
+"12/20 uploads" instead of pattern-matching a message string. Only
+`max_concurrent_uploads` gets a `Retry-After` header — it's the only one of
+the four that's genuinely transient (a slot frees up as soon as another
+upload finishes); the others need a human to raise the limit or usage to
+drop on its own.
+
+Quotas bound one tenant's own usage. They are a separate mechanism from the
+fair-share scheduler (§4), which bounds how worker *time* is split across
+tenants regardless of any one tenant's quota — a tenant comfortably under
+every quota can still wait behind others' running jobs if its weight is low
+relative to how much they're running.
+
+---
 
 ## 6. AI Extend dispatcher
 
-A single module-level (shared, since Cloudinary creds are global — §3.4)
-dispatcher: a counting semaphore for global concurrency, a token-bucket rate
-limiter, and a `Map<tenantId, count>` for the per-tenant cap. Every
-`background_fill` job acquires through the dispatcher before calling
-`generativeFill`; on a 429, the existing `defer()`-with-backoff path stays,
-just reads `Retry-After` when present instead of the current fixed 20s
-cooldown. Monthly usage metering is a `control.db` counter incremented on
-each successful generation, read by the admin page (§8) and checked against
-quota before the dispatcher even attempts the call (fail fast with a clear
-tenant-facing error rather than spending a slot on a call that'll be
-rejected downstream).
+Cloudinary is **one shared paid account** — `cloudinary.config()` is a
+process-global SDK singleton called once; there is no per-tenant credential
+swapping. `src/jobs/ai-extend-dispatcher.ts` is a single module-level
+dispatcher sitting in front of every `background_fill` job:
 
-## 7. Legacy migration
+- A counting semaphore for `AI_EXTEND_GLOBAL_CONCURRENCY` (max simultaneous
+  Cloudinary calls across every worker process combined).
+- A token-bucket rate limiter (`AI_EXTEND_RATE_LIMIT_PER_SECOND` /
+  `_BURST`).
+- A `Map<tenantId, count>` enforcing `AI_EXTEND_PER_TENANT_CONCURRENCY`,
+  independent of the global cap.
+- A monthly circuit breaker (`AI_EXTEND_GLOBAL_MONTHLY_CAP`) against the
+  WHOLE account's usage, independent of any one tenant's own
+  `maxAiExtendPerMonth` quota — a warning logs at 80%, the dispatcher
+  refuses outright at 100% regardless of whether any individual tenant is
+  still under their own limit.
+
+A 429 from Cloudinary feeds the existing `defer()`-with-backoff retry path,
+reading `Retry-After` when Cloudinary sends one rather than a fixed cooldown.
+Every successful generation increments a `control.db` usage counter, read by
+the admin console and checked against quota before the dispatcher even
+attempts the call — a tenant over quota fails fast with a clear error
+instead of spending a concurrency slot on a call that would be rejected
+downstream anyway. Every result is cached as a derived asset keyed by
+`(tenant_id, source_hash, canvas, padding, prompt)` — the tenant ID in that
+key is what prevents tenant B's identical stock photo from getting a free
+ride on tenant A's already-paid-for generation.
+
+---
+
+## 7. Security model
+
+**Authentication.** Argon2id password hashing (`src/auth/password.ts`).
+Sessions are opaque random tokens stored hashed (SHA-256) in `control.db`'s
+`sessions` table, never the raw token — a dump of that table cannot be
+replayed into a valid cookie. Sliding expiry (`SESSION_TTL_MS`, refreshed on
+every authenticated request, not a fixed login duration). `attemptLogin`
+(`src/auth/login.ts`) hashes against a fixed dummy Argon2id hash on an
+unknown email so a login attempt costs the same ~50-100ms whether or not the
+account exists — response-time alone can't be used to enumerate accounts.
+
+**Login rate limiting.** Independent per-account and per-IP buckets
+(`login_attempts`, windowed by `LOGIN_WINDOW_MS`): `LOGIN_MAX_ATTEMPTS`
+failures per account, `4×` that per IP (a shared office/NAT IP genuinely has
+several people failing their own passwords; ten failures against one
+specific account from anywhere never is). The IP identity comes from
+`clientIp()` (`src/auth/client-ip.ts`), which **ignores `X-Forwarded-For`
+entirely unless `TRUST_PROXY=true`** — with it off, every request shares one
+"unknown" bucket, coarse but ungameable; a client cannot pick its own (or
+someone else's) rate-limit bucket by setting a header. With it on, only the
+LAST hop of `X-Forwarded-For` is trusted (the entry the one reverse proxy in
+front of this app itself appended), never the first — see
+`tests/ops/login-rate-limit.test.ts` for the behavior under both settings,
+including a header carrying a spoofed first entry.
+
+**Cookies.** `vs_session` is `HttpOnly` (unreadable to any script, so an XSS
+bug can't exfiltrate it directly), `SameSite=Lax`, and `Secure` whenever
+`NODE_ENV=production` (overridable via `COOKIE_SECURE` either direction —
+see `.env.example`).
+
+**CSRF.** Every mutating request (`POST`/`PUT`/`PATCH`/`DELETE`) through
+`handler()`/`adminHandler()` checks `Origin` against `config.auth.appOrigin`
+(required in production) or, in development, against Next's own
+`nextUrl.host`. A mismatched `Origin` is rejected with 403 before the route
+body runs. This is defense in depth alongside `SameSite=Lax` (which already
+blocks a cross-site form POST or plain link in most browsers) — it catches
+what `Lax` doesn't, like a `fetch()` from another origin that still happens
+to carry the cookie. A *missing* `Origin` header is allowed through
+(some legitimate same-origin requests and non-browser clients omit it); the
+cookie's own protections remain the primary defense either way.
+
+**Security headers** (`next.config.ts`, every route): `X-Content-Type-
+Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`,
+`X-Frame-Options: SAMEORIGIN`, a `Permissions-Policy` denying camera/mic/
+geolocation/payment (unused features), `Strict-Transport-Security` (only
+meaningful once actually served over HTTPS — harmless over plain HTTP in
+dev), and a `Content-Security-Policy`: `script-src 'self'` with no
+`unsafe-inline`/`unsafe-eval` in production (`'unsafe-eval'` only in `npm
+run dev`, required for Next's Fast Refresh); `style-src 'self'
+'unsafe-inline'` (React's `style={{}}` prop renders as an inline `style`
+attribute in a handful of components — inline STYLE is a far smaller attack
+surface than inline SCRIPT, which stays fully disallowed); media only from
+this app's own content-addressed `/api/media/*` route, never a remote
+origin.
+
+**Production error responses never leak internals.** `mapKnownError()`
+(`src/lib/api-handler.ts`) always logs the full error server-side, but in
+`NODE_ENV=production` an unhandled error's message is replaced with a flat
+"internal server error" before it reaches the client — an `ENOENT` with an
+absolute data-directory path, a raw SQLite error string, or anything else
+`.message` might contain is never shipped out. Structured, intentionally
+user-facing errors (`QuotaExceededError`, `ExportCapacityError`,
+`InsufficientDiskSpaceError`, the AI Extend quota error) are unaffected —
+their messages are written to be shown to a user and keep their specific
+text, limit, and usage numbers in every environment. See
+`tests/ops/error-leakage.test.ts`.
+
+**Tenant isolation at the data layer.** Enforced structurally, not by
+per-query `WHERE tenant_id = ?` discipline: there is no connection that can
+see two tenants' `app.db` rows at once, because each tenant's data lives in
+its own SQLite file and the only way to open one is through
+`currentTenant()` (§3) or an explicitly-named tenant ID in an admin action —
+there is no "list across tenants" query possible at the `app.db` layer even
+in principle. `tests/isolation/*` exercises this at the HTTP level across
+every route.
+
+**`ALLOW_MULTI_TENANT_PREVIEW`.** Gates creating a second tenant at all —
+see §9.1 for exactly what would need to be true to remove this gate, and
+whether removing it is recommended today.
+
+**Audit log.** `control.db`'s `audit_log` records security-relevant events
+(`login_failed`, admin tenant actions, password changes) with actor, tenant,
+and a JSON detail blob — append-only, read by the admin console, never
+exposed to a non-admin tenant user.
+
+---
+
+## 8. Legacy migration
 
 `npm run tenants:migrate-legacy`:
-1. Refuses to run without `--i-have-a-backup` (or equivalent confirmation
-   flag).
+1. Refuses to run without a confirmation flag.
 2. Creates `control.db`, runs its schema.
 3. Creates the first tenant + `platform_admin` user from `ADMIN_EMAIL` /
    `ADMIN_PASSWORD`.
@@ -327,47 +361,74 @@ rejected downstream).
    `data/media/*` → `data/tenants/<id>/media/*`, preserving every path
    exactly (content-addressed keys don't change, only their root).
 5. Verifies: row counts per table match pre/post, file counts under each
-   media root match, and a sample of N source hashes re-resolve to the same
+   media root match, and a sample of source hashes re-resolve to the same
    bytes.
 6. Idempotent: safe to re-run (checks whether the legacy DB file still
    exists at the old path before doing anything).
 
-`scripts/migrate.ts` (the existing single-DB runner) becomes: migrate
-`control.db`, then enumerate tenants from `control.db` and call the
-existing `migrate(db)` (already parameterized — no change needed to that
-function itself) against each tenant handle.
+`scripts/migrate.ts` migrates `control.db` first, then enumerates every
+tenant from it and runs the same parameterized `migrate(db)` against each
+tenant handle — one function, called once per tenant, no tenant-specific
+branching.
+
+This is the **only** step that touches the pre-multi-tenancy layout, and it
+is never run automatically — see `docs/OPERATIONS.md`'s rollback procedure
+for why that matters and `docker-entrypoint.sh`'s own comment confirming the
+container entrypoint runs `control.db`/tenant migrations on every boot but
+never this one.
 
 ---
 
-## 8. Still to detail in later phases (not blocking P1)
+## 9. Operational resilience (P6)
 
-- Exact `control.db` schema for `users` / `memberships` / `sessions` /
-  `quotas` / `usage` / `audit_log` (P1).
-- Admin page field list and the ops runbook (backup/restore/move/delete/
-  suspend) (P5/P6, after the storage layout in §2 is implemented and there's
-  something concrete to document procedures against).
-- Load test script and its recorded results (P6).
+Architecture summary only — procedures live in `docs/OPERATIONS.md`.
+
+- **Graceful shutdown.** On `SIGTERM`/`SIGINT`
+  (`src/jobs/shutdown.ts`, wired in `instrumentation.ts`), the pool stops
+  claiming new jobs immediately (the worker loop already only checks between
+  jobs, never interrupts one in progress), gives whatever's running
+  `SHUTDOWN_GRACE_SECONDS` (default 30) to finish, then kills anything still
+  busy and returns its job to `pending` via `queue.returnToPending()` —
+  which explicitly refunds the attempt `claim()` already consumed
+  (`attempts = MAX(0, attempts - 1)`), so an orderly shutdown never counts
+  against a job's retry budget the way a crash would. Every open SQLite
+  handle is `wal_checkpoint(TRUNCATE)`'d before close. The container
+  orchestrator's own stop timeout (`docker stop -t`,
+  `terminationGracePeriodSeconds`) **must** exceed this value or `SIGKILL`
+  arrives first and skips the graceful path entirely.
+- **Disk guard.** Below `DISK_MIN_FREE_GB` free on the data volume, new
+  uploads are refused outright (`assertDiskSpaceAvailable`,
+  `src/jobs/disk-guard.ts`) before a single byte is written — checked
+  against the whole volume, not a tenant's own storage quota, since a full
+  disk is a server-wide failure mode no per-tenant limit prevents. Fails
+  OPEN if `fs.statfs` itself is unavailable on the platform (never blocks
+  uploads over a defensive check that couldn't run), fails CLOSED (refuses)
+  when it successfully measures low space.
+- **Backups.** `scripts/backup.ts` uses better-sqlite3's online backup API
+  (transactionally consistent, non-blocking) for `control.db` and every
+  tenant `app.db`, plus an incremental media copy (content-addressed files
+  are immutable, so "incremental" is just "copy what doesn't already
+  exist"). `scripts/restore.ts` is the matching restore; `scripts/tenant-
+  export.ts`/`tenant-import.ts` move one tenant's data between servers. A
+  filesystem/volume snapshot of the data directory is **only
+  crash-consistent** (equivalent to the server losing power mid-write) —
+  SQLite's own WAL recovery handles that safely, but it is a different, less
+  controlled guarantee than an online backup taken through the app.
+- **Health.** `/api/health` returns status only (`{status: 'ok'}` or 503
+  `{status: 'error'}`) — no counts, no detail, nothing an unauthenticated
+  prober shouldn't see. Readiness means `control.db` accepts a write lock
+  (`BEGIN IMMEDIATE; ROLLBACK`, never committed) and the data directory
+  accepts a real file write. The Docker image's `HEALTHCHECK` polls this
+  endpoint.
+- **Container.** Runs as a non-root user with `/app/data` pre-owned by it;
+  dependencies installed from the lockfile (`npm ci`); the entrypoint runs
+  `control.db` + tenant migrations on every boot and nothing else — the
+  legacy migration is a deliberate, separate, manual step, never triggered
+  by the container starting.
 
 ---
 
-## Summary: what needs sign-off before P1 starts
-
-1. **§3.1** — drop the `jobs.batch_id` FK, handle cascade at the application
-   level in the stated order. Confirm, or specify the pointer-table
-   alternative.
-2. **§3.5** — single-file export stays synchronous-in-web-process (CPU
-   bounded by quota, not moved to the job queue); only bulk ZIP generation
-   and upload ingestion move to true streaming. Confirm, or require all
-   image conversion to go through workers.
-
-Everything else in this document is either already-confirmed-aligned with
-the spec or an implementation detail within a decision the spec already
-made. Absent objections, P1 (control plane, auth, TenantContext, legacy
-migration) starts from this document as written.
-
----
-
-## 9. P4 manual QA checklist — two-session smoke test
+## 10. Manual two-tenant QA checklist
 
 No browser test harness exists in this repo (no Playwright/Cypress/
 Puppeteer), so the isolation properties the automated suite already checks
@@ -376,12 +437,14 @@ hand, the way an actual user would encounter them: two browser sessions
 side by side, logged in as two different tenants.
 
 Run through this after any change touching auth, tenancy context, the job
-queue, or the streaming upload/export paths.
+queue, or the streaming upload/export paths. This same checklist is also the
+"two-user smoke test" referenced in `docs/DEPLOY.md`'s post-deploy
+verification.
 
 ### Setup
 
-1. Two tenants, each with at least one user (`scripts/`'s admin bootstrap or
-   the signup flow, whichever is enabled).
+1. Two tenants, each with at least one user (admin console or
+   `npm run admin:create-tenant`).
 2. Two browser windows (or one normal + one private/incognito, so cookies
    don't collide) — **Tenant A** and **Tenant B**.
 
@@ -429,3 +492,98 @@ queue, or the streaming upload/export paths.
       is in flight, and most should come back `304` once state has
       settled. Switch a tab to background (another tab in front) and
       confirm polling pauses entirely while hidden.
+
+---
+
+## Appendix A: Phase 0 investigation findings (historical)
+
+Produced before any multi-tenancy code existed, by reading the then-current
+(fully single-tenant, zero-auth) codebase. Kept verbatim as the record of
+the starting point.
+
+**Fully single-tenant, zero auth, as documented.** `docs/DEPLOY.md`,
+`render.yaml`, and a comment in `config.ts` already said "no login." No
+`middleware.ts`, no auth library in `package.json`, no `users` table. Every
+one of the 25 API routes under `src/app/api/` fetched by a client-supplied
+ID with no ownership check — this wasn't a gap to patch per-route, it was
+the universal behavior, confirmed route by route.
+
+**More infrastructure already existed than the spec assumed:**
+
+- **Priority already existed** (`jobs.priority`, lower runs sooner), but as a
+  single static integer with no weight and no per-tenant fairness. Claiming
+  was `ORDER BY priority, created_at` — strict FIFO within a priority level.
+- **Leases/heartbeats already existed.** Workers heartbeat every 5s;
+  `reclaimStale()` requeued jobs whose heartbeat was older than 5 minutes.
+  Gaps at the time: no explicit lease-expiry column, and `complete()`/
+  `fail()` didn't check `worker_id`.
+- **Atomic claiming already worked**, via a SELECT-candidates-then-per-row-
+  `UPDATE…WHERE status='pending'` inside an `IMMEDIATE` transaction.
+- **OS-level worker priority already existed** —
+  `os.setPriority(child.pid, PRIORITY_BELOW_NORMAL)` on every spawned
+  worker.
+- **A version-tracked migration runner already existed**
+  (`src/db/migrate.ts`), already parameterized on a `Db` handle rather than
+  a singleton.
+- **No module-level caches of decoded images or analysis results** existed
+  anywhere in `src/vision/` — the ONNX session manager was the only
+  long-lived vision state, and pure model weights are safe to share.
+
+**Real gaps the spec correctly anticipated:**
+
+- `media-store.ts`'s `ROOTS` and `config.paths.*` were frozen at module load
+  from one `dataDir` — tenant-scoping needed turning these into functions.
+- The AI-Extend derived-asset cache key had no tenant component — a
+  cross-tenant leak and a paid-credit double-charge-prevention mechanism
+  working in reverse.
+- The global vision-analysis cache would have given tenant B a cache hit on
+  tenant A's analysis of identical photo bytes, since stock photos and
+  common product shots collide on hash routinely.
+- Bulk ZIP download, export conversion, and upload ingestion all fully
+  buffered in memory despite a comment claiming "streamed."
+
+## Appendix B: Phase 0 decisions (historical, all resolved)
+
+These were the architecture-affecting choices flagged before P1 started.
+Each is marked with how it was actually resolved, cross-referenced to the
+section above that now describes the built result.
+
+### B.1 The `jobs.batch_id → batches` foreign key could not survive the DB split
+
+**Resolved as proposed.** The FK was dropped. `jobs` in `control.db` carries
+a plain `(tenant_id, batch_id)` pair with no referential constraint;
+cascade-on-delete is an explicit two-step application-level operation
+(cancel the batch's jobs in `control.db` first, delete the batch row in the
+tenant's `app.db` second) — see `queue.cancelBatch()`.
+
+### B.2 Weighted fair-share scheduling needed a concrete claim mechanism
+
+**Resolved as proposed**, and now the actual implementation — see §4. The
+`tenant_queue_state` table and the `running_jobs / weight` claim ordering
+described there is exactly this proposal, built.
+
+### B.3 AsyncLocalStorage cannot cross the worker process boundary
+
+**Confirmed, not a conflict** — see §3's description of how the job row's
+`tenant_id` and a fresh `runWithTenant()` call per job handle this.
+
+### B.4 Cloudinary stays ONE shared account
+
+**Confirmed, not a conflict** — see §6. One process-global SDK
+configuration; per-tenant behavior is a concurrency cap and a quota, never
+separate credentials.
+
+### B.5 Streaming vs. moving CPU work to the worker pool for downloads/exports
+
+**Resolved as proposed.** The memory problem was fixed directly: bulk ZIP
+downloads stream file-by-file (`archiver`), uploads stream to a tenant
+`tmp/` file via `busboy` instead of buffering `request.formData()` (see the
+module doc on `src/app/api/imports/[importId]/files/route.ts` for the
+full before/after). The CPU question was resolved as a quota/scheduling
+concern rather than a hard relocation: `EXPORT_GLOBAL_CONCURRENCY` /
+`EXPORT_PER_TENANT_CONCURRENCY` (`src/render/export-concurrency.ts`) cap
+concurrent export conversions in the web process; single-creative export
+stays synchronous (a sub-second operation that would otherwise become a
+multi-second round trip through the job queue for no benefit), while large
+bulk ZIP generation goes through the background job queue with a polled
+"ready" state.

@@ -26,6 +26,7 @@ import { runWithTenant } from '@/tenancy/context'
 import { QuotaExceededError } from '@/jobs/quota'
 import { AiExtendQuotaExceededError } from '@/jobs/ai-extend-dispatcher'
 import { ExportCapacityError } from '@/render/export-concurrency'
+import { InsufficientDiskSpaceError } from '@/jobs/disk-guard'
 
 export function ok<T>(data: T, init?: ResponseInit): NextResponse {
   return NextResponse.json(data as any, init)
@@ -206,8 +207,27 @@ export function mapKnownError(err: unknown): NextResponse {
       { status: 503, headers: { 'retry-after': String(err.retryAfterSeconds) } }
     )
   }
+  if (err instanceof InsufficientDiskSpaceError) {
+    // 503 for the same reason as ExportCapacityError above — a server-wide
+    // resource constraint, not anything the caller is over.
+    return NextResponse.json(
+      { error: err.message, code: 'insufficient_disk_space' },
+      { status: 503 }
+    )
+  }
 
-  const message = err instanceof Error ? err.message : String(err)
+  // Always logged in full server-side. The CLIENT only gets the real
+  // message in development — in production an unhandled error's `.message`
+  // routinely contains an absolute file path (ENOENT, EACCES, ...) or a
+  // SQLite internals string, neither of which is anyone outside this
+  // process's business. A generic message still gets an honest 500; the
+  // detail a developer needs lives in the server log, not the response.
   console.error('[api]', err)
+  const message =
+    process.env.NODE_ENV === 'production'
+      ? 'internal server error'
+      : err instanceof Error
+        ? err.message
+        : String(err)
   return serverError(message)
 }

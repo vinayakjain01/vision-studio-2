@@ -200,10 +200,22 @@ export function getDb(): Db {
 }
 
 /** Closes every open handle — control-plane and every cached tenant. */
+/** Best-effort WAL checkpoint — folds the write-ahead log back into the main file, so a volume snapshot or backup taken right after close reflects everything without needing -wal/-shm alongside it. Never throws: a checkpoint failing is not a reason to skip closing the handle. */
+function checkpoint(db: Db): void {
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)')
+  } catch {
+    // Best-effort — proceed to close regardless.
+  }
+}
+
+/** Checkpoints and closes every open handle — control-plane and every cached tenant. Called on graceful shutdown (P6) and by tests that need a clean slate. */
 export function closeDb(): void {
+  if (global.__visionStudioControlDb) checkpoint(global.__visionStudioControlDb)
   closeControlDb()
   const handles = tenantHandles()
   for (const db of handles.values()) {
+    checkpoint(db)
     try {
       db.close()
     } catch {

@@ -458,4 +458,41 @@ describe('queue: cross-tenant ID scoping (shared physical table)', () => {
       expect(queue.stats('vision', a.tenantId).completed).toBe(0)
     })
   })
+
+  describe('returnToPending() — P6 graceful shutdown', () => {
+    it('hands a running job back to pending WITHOUT consuming an attempt, and decrements running_jobs', () => {
+      const a = createTestTenant('A')
+      queue.enqueue(a.tenantId, [{ kind: 'vision', payload: { imageId: 'i1', sourceHash: 'h1', storageKey: 'k' } }])
+      const job = queue.claim('vision', 'w1')!
+      queue.markRunning(job.id, 'w1')
+      expect(tenantQueueState.get(a.tenantId)?.runningJobs).toBe(1)
+
+      const result = queue.returnToPending(job.id, 'w1')
+      expect(result).toBe(true)
+
+      const row = queue.get(a.tenantId, job.id)!
+      expect(row.status).toBe('pending')
+      expect(row.attempts).toBe(0) // the defining difference from fail()/reclaimStale()
+      expect(tenantQueueState.get(a.tenantId)?.runningJobs).toBe(0)
+
+      // Immediately claimable again — nothing about the row is left in a
+      // half-returned state.
+      const reclaimed = queue.claim('vision', 'w2')
+      expect(reclaimed?.id).toBe(job.id)
+    })
+
+    it('is a no-op for a job already finished, or claimed by a different worker (stale write guard)', () => {
+      const a = createTestTenant('A')
+      queue.enqueue(a.tenantId, [{ kind: 'vision', payload: { imageId: 'i1', sourceHash: 'h1', storageKey: 'k' } }])
+      const job = queue.claim('vision', 'w1')!
+      queue.markRunning(job.id, 'w1')
+
+      expect(queue.returnToPending(job.id, 'wrong-worker')).toBe(false)
+      expect(queue.get(a.tenantId, job.id)!.status).toBe('running') // untouched
+
+      queue.complete(job.id, 'w1')
+      expect(queue.returnToPending(job.id, 'w1')).toBe(false) // already completed
+      expect(queue.get(a.tenantId, job.id)!.status).toBe('completed')
+    })
+  })
 })

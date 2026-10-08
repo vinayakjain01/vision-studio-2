@@ -56,7 +56,11 @@ async function runOne(kind: JobKind): Promise<boolean> {
   if (!job) return false
 
   queue.markRunning(job.id, cfg.workerId)
-  post({ type: 'job:started', jobId: job.id, tenantId: job.tenantId })
+  // Full WorkerMessage shape (not just the fields this file's own tests
+  // read) — tests/jobs/graceful-shutdown.test.ts points a REAL WorkerPool
+  // at this fake entry (via VISION_STUDIO_WORKER_ENTRY_OVERRIDE), and that
+  // class's real `currentJob` tracking needs `kind`/`startedAt` too.
+  post({ type: 'job:started', workerId: cfg.workerId, jobId: job.id, kind, tenantId: job.tenantId, startedAt: new Date().toISOString() })
 
   const beat = setInterval(() => {
     try {

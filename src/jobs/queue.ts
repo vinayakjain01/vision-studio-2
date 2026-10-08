@@ -556,6 +556,39 @@ export function cancelAll(tenantId?: string): { cancelled: number; tenantsAffect
   })
 }
 
+/**
+ * P6 graceful shutdown: hand a still-in-flight job back to 'pending'
+ * WITHOUT consuming an attempt — unlike `fail()` (which always counts one)
+ * or the stale-claim sweep's `reclaimStale()` (which treats an expired
+ * lease as evidence of a crash and counts one there too). This is neither:
+ * it's an orderly shutdown deliberately choosing not to wait for this one
+ * job, through no fault of the job itself. A worker holding a job it never
+ * got to finish calls this right before being killed (see `pool.stop()`).
+ * A no-op (returns false) if the job already finished or was claimed by
+ * someone else in the meantime — same "stale write ignored" guard every
+ * other mutating queue function uses.
+ */
+export function returnToPending(jobId: string, workerId: string): boolean {
+  return controlTx(db => {
+    const owned = ownedRow(db, jobId, workerId)
+    if (!owned) return false
+
+    const ts = nowIso()
+    // `claim()` increments `attempts` the moment a job is claimed, not on
+    // failure — so "without counting an attempt" means undoing THAT
+    // increment here, the same `MAX(0, attempts - 1)` refund `defer()` uses.
+    // Skipping this would silently count the attempt anyway.
+    db.prepare(
+      `UPDATE jobs SET status = 'pending', worker_id = NULL, claimed_at = NULL,
+                       heartbeat_at = NULL, lease_expires_at = NULL, available_at = NULL,
+                       attempts = MAX(0, attempts - 1), updated_at = ?
+       WHERE id = ?`
+    ).run(ts, jobId)
+    decrementRunning(db, owned.tenantId)
+    return true
+  })
+}
+
 /** Reads the TENANT's own `batches` table (app.db) — nothing to do with control.db's jobs table; kept here because every worker call site already imports this module as `queue`. */
 export function isBatchCancelled(batchId: string): boolean {
   const row = getDb().prepare('SELECT status FROM batches WHERE id = ?').get(batchId) as any

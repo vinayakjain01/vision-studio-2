@@ -21,7 +21,12 @@
     "bench:memory": "tsx scripts/bench-memory-client.ts",
     "admin:create-tenant": "tsx scripts/admin-create-tenant.ts",
     "admin:reset-password": "tsx scripts/admin-reset-password.ts",
-    "admin:promote": "tsx scripts/admin-promote.ts"
+    "admin:promote": "tsx scripts/admin-promote.ts",
+    "backup": "tsx scripts/backup.ts",
+    "restore": "tsx scripts/restore.ts",
+    "tenant:export": "tsx scripts/tenant-export.ts",
+    "tenant:import": "tsx scripts/tenant-import.ts",
+    "loadtest": "tsx scripts/loadtest-multitenant.ts"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.3",
@@ -34,7 +39,7 @@
     "jszip": "^3.10.1",
     "lucide-react": "^1.17.0",
     "nanoid": "^5.1.11",
-    "next": "16.2.12",
+    "next": "^16.4.0",
     "onnxruntime-node": "^1.27.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
