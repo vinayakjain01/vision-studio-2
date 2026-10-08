@@ -70,6 +70,28 @@ describe('admin-service', () => {
       expect(entries[0].tenantId).toBe(result.tenantId)
     })
 
+    it('provisions a real, usable app.db and media directories — not just the control-plane row (regression)', async () => {
+      // A real bug, found by hand after P5: tenants.create() only inserts
+      // control-plane rows (tenants/quotas/tenant_queue_state); it does
+      // nothing to the new tenant's own app.db or media directories, which
+      // every tenant-scoped page/query assumes already exist. Without
+      // provisioning them here, the very first page a brand-new tenant's
+      // owner loads throws "no such table: images".
+      const result = await createTenantAndFirstUser(
+        { tenantName: 'Provisioned Co', email: 'owner@provisioned.test' },
+        ACTOR
+      )
+
+      const counts = await runWithTenant(
+        { tenantId: result.tenantId, userId: result.userId, role: 'owner' },
+        async () => {
+          const { images } = await import('@/db/repositories')
+          return images.statusCounts()
+        }
+      )
+      expect(counts).toEqual({ pending: 0, processing: 0, ready: 0, failed: 0, unavailable: 0 })
+    })
+
     it('rejects creating a user for an email that already exists', async () => {
       await createTenantAndFirstUser({ tenantName: 'A', email: 'dup@test.local' }, ACTOR)
       await expect(

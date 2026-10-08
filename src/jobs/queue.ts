@@ -516,6 +516,46 @@ export function deleteJobsForBatch(tenantId: string, batchId: string): number {
   })
 }
 
+/**
+ * Ops escape hatch: cancel EVERY not-yet-finished job — including 'running'
+ * ones, unlike `cancelBatch` (which deliberately leaves 'running' jobs alone
+ * to finish normally). For when the queue is genuinely stuck (a crashed or
+ * wedged worker that will never call back `complete()`/`fail()` for the job
+ * it was holding) and someone needs it cleared regardless of what was
+ * mid-flight — a late, stale call from a zombie worker afterward is a no-op
+ * either way (`ownedRow` no longer matches a cancelled job's status).
+ *
+ * Scoped to one tenant if `tenantId` is given, every tenant otherwise.
+ * `tenant_queue_state.running_jobs` is reset to exactly 0 for each affected
+ * tenant rather than decremented by a counted amount — correct here
+ * specifically because EVERY in-flight job for that tenant is being
+ * cancelled, so 0 is the right answer regardless of what the counter drifted
+ * to beforehand.
+ */
+export function cancelAll(tenantId?: string): { cancelled: number; tenantsAffected: string[] } {
+  return controlTx(db => {
+    const ts = nowIso()
+    const where = tenantId
+      ? `WHERE tenant_id = ? AND status IN ('pending', 'claimed', 'running')`
+      : `WHERE status IN ('pending', 'claimed', 'running')`
+    const params = tenantId ? [ts, ts, tenantId] : [ts, ts]
+
+    const affected = (
+      db.prepare(`SELECT DISTINCT tenant_id FROM jobs ${where}`).all(...(tenantId ? [tenantId] : []))
+    ).map((r: any) => r.tenant_id as string)
+
+    const info = db
+      .prepare(`UPDATE jobs SET status = 'cancelled', completed_at = ?, updated_at = ? ${where}`)
+      .run(...params)
+
+    for (const t of affected) {
+      db.prepare('UPDATE tenant_queue_state SET running_jobs = 0 WHERE tenant_id = ?').run(t)
+    }
+
+    return { cancelled: info.changes, tenantsAffected: affected }
+  })
+}
+
 /** Reads the TENANT's own `batches` table (app.db) — nothing to do with control.db's jobs table; kept here because every worker call site already imports this module as `queue`. */
 export function isBatchCancelled(batchId: string): boolean {
   const row = getDb().prepare('SELECT status FROM batches WHERE id = ?').get(batchId) as any

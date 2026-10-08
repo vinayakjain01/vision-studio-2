@@ -45,6 +45,33 @@ describe('POST /api/auth/change-password', () => {
     expect(res.status).toBe(400)
   })
 
+  it('works for a platform admin with NO personal tenant at all (regression)', async () => {
+    // A real bug, found by hand after P5: this route used to go through
+    // handler(), which rejects any session with no tenant ("this account
+    // has no workspace") before the route body ever runs — exactly the
+    // shape of a tenant-less platform admin (see ResolvedSession's doc
+    // comment), who is also exactly who most needs this route to work the
+    // day after an admin-initiated password reset.
+    const admin = users.create({
+      email: 'tenantless-admin@test.local',
+      passwordHash: await hashPassword('CorrectHorse1'),
+      isPlatformAdmin: true,
+    })
+    const { token } = createSession(admin.id)
+
+    const res = await changePassword(
+      makeRequest('http://localhost:3000/api/auth/change-password', {
+        method: 'POST',
+        cookie: cookieHeader(token),
+        json: { currentPassword: 'CorrectHorse1', newPassword: 'BrandNewPassword1' },
+      })
+    )
+    expect(res.status).toBe(200)
+
+    const updated = users.get(admin.id)!
+    expect(await verifyPassword(updated.passwordHash, 'BrandNewPassword1')).toBe(true)
+  })
+
   it('changes the password and revokes every OTHER session, keeping the current one alive', async () => {
     const tenant = await setupUserWithPassword('ChangePwOk', 'CorrectHorse1')
     // A second, independent session for the same user — simulating another

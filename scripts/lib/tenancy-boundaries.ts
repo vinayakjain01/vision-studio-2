@@ -72,6 +72,12 @@ const ALLOWED = [
   'src/jobs/pool.ts',
   'src/jobs/worker.ts',
   'src/jobs/worker-entry.ts',
+  // Admin provisioning (P5): creating a tenant means bringing its app.db and
+  // media directories into existence for the first time, before any request
+  // for that tenant exists to derive a TenantContext from — same exception
+  // as the maintenance scripts below, see createTenantAndFirstUser's doc
+  // comment.
+  'src/services/admin-service.ts',
   // Maintenance scripts with no request to derive a tenant from — see each
   // file's own doc comment for why it uses openTenantDbById explicitly.
   'scripts/clear-queue.ts',

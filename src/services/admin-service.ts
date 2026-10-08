@@ -32,9 +32,10 @@ import {
   type QuotaRecord,
   type AuditLogEntry,
 } from '@/db/control-repositories'
-import { closeTenantDb, getControlDb } from '@/db/client'
+import { closeTenantDb, getControlDb, openTenantDbById } from '@/db/client'
+import { migrate } from '@/db/migrate'
 import { config } from '@/config'
-import { purgeTenantDirectory } from '@/storage/media-store'
+import { purgeTenantDirectory, ensureMediaRoots } from '@/storage/media-store'
 import { generateTempPassword, hashPassword } from '@/auth/password'
 import { getQueueWaitPercentiles } from '@/jobs/queue-wait-rollup'
 import { getPool } from '@/jobs/pool'
@@ -255,6 +256,16 @@ export async function createTenantAndFirstUser(
   }
 
   const tenant = tenants.create(input.tenantName) // throws its own clear message if preview mode forbids a second tenant
+
+  // tenants.create() only inserts the CONTROL-PLANE row (tenants, quotas,
+  // tenant_queue_state, ai_extend_tenant_state) — this tenant has no app.db
+  // and no media directories yet, which every tenant-scoped page/query
+  // assumes exist. Every other path that creates a tenant (the legacy-
+  // migration bootstrap, every test fixture) does both of these
+  // immediately afterward; this one was missing it.
+  ensureMediaRoots(tenant.id)
+  migrate(openTenantDbById(tenant.id))
+
   const tempPassword = generateTempPassword()
   const passwordHash = await hashPassword(tempPassword)
   const user = users.create({ email: input.email, passwordHash, mustChangePassword: true })

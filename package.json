@@ -20,7 +20,8 @@
     "setup": "npm run db:migrate && npm run models:fetch",
     "bench:memory": "tsx scripts/bench-memory-client.ts",
     "admin:create-tenant": "tsx scripts/admin-create-tenant.ts",
-    "admin:reset-password": "tsx scripts/admin-reset-password.ts"
+    "admin:reset-password": "tsx scripts/admin-reset-password.ts",
+    "admin:promote": "tsx scripts/admin-promote.ts"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.3",

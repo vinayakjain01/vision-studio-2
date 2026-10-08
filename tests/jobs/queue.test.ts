@@ -405,4 +405,57 @@ describe('queue: cross-tenant ID scoping (shared physical table)', () => {
     expect(queue.stats('vision', b.tenantId).pending).toBe(1)
     expect(queue.stats('vision').pending).toBe(3) // global, no tenantId
   })
+
+  describe('cancelAll()', () => {
+    it('cancels pending, claimed, AND running jobs for one tenant — unlike cancelBatch, which leaves running jobs alone', () => {
+      const a = createTestTenant('A')
+      queue.enqueue(a.tenantId, [
+        { kind: 'vision', payload: { imageId: 'i1', sourceHash: 'h1', storageKey: 'k' } },
+        { kind: 'vision', payload: { imageId: 'i2', sourceHash: 'h2', storageKey: 'k' } },
+        { kind: 'vision', payload: { imageId: 'i3', sourceHash: 'h3', storageKey: 'k' } },
+      ])
+      const claimed = queue.claim('vision', 'w1')!
+      queue.markRunning(claimed.id, 'w1') // this one is now genuinely 'running', not just 'claimed'
+      queue.claim('vision', 'w2') // a second one sits at 'claimed'
+      // The third stays 'pending'.
+
+      const result = queue.cancelAll(a.tenantId)
+      expect(result.cancelled).toBe(3)
+      expect(result.tenantsAffected).toEqual([a.tenantId])
+
+      const stats = queue.stats('vision', a.tenantId)
+      expect(stats.cancelled).toBe(3)
+      expect(stats.pending + stats.claimed + stats.running).toBe(0)
+      expect(tenantQueueState.get(a.tenantId)?.runningJobs).toBe(0)
+    })
+
+    it('with no tenantId, clears every tenant\'s queue; with one, leaves every other tenant untouched', () => {
+      const a = createTestTenant('A')
+      const b = createTestTenant('B')
+      queue.enqueue(a.tenantId, [{ kind: 'vision', payload: { imageId: 'i1', sourceHash: 'h1', storageKey: 'k' } }])
+      queue.enqueue(b.tenantId, [{ kind: 'vision', payload: { imageId: 'j1', sourceHash: 'h2', storageKey: 'k' } }])
+
+      queue.cancelAll(a.tenantId)
+      expect(queue.stats('vision', a.tenantId).pending).toBe(0)
+      expect(queue.stats('vision', b.tenantId).pending).toBe(1) // B untouched
+
+      const result = queue.cancelAll() // no tenantId — everyone
+      expect(result.cancelled).toBe(1) // only B had anything left
+      expect(queue.stats('vision', b.tenantId).pending).toBe(0)
+    })
+
+    it('a late, stale complete() from a zombie worker after cancelAll() is a no-op', () => {
+      const a = createTestTenant('A')
+      queue.enqueue(a.tenantId, [{ kind: 'vision', payload: { imageId: 'i1', sourceHash: 'h1', storageKey: 'k' } }])
+      const claimed = queue.claim('vision', 'zombie-worker')!
+      queue.markRunning(claimed.id, 'zombie-worker')
+
+      queue.cancelAll(a.tenantId)
+
+      const result = queue.complete(claimed.id, 'zombie-worker')
+      expect(result.ok).toBe(false) // ownedRow no longer matches — the row is 'cancelled' now
+      expect(queue.stats('vision', a.tenantId).cancelled).toBe(1)
+      expect(queue.stats('vision', a.tenantId).completed).toBe(0)
+    })
+  })
 })

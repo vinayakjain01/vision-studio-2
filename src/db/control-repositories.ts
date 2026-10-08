@@ -94,6 +94,13 @@ export const users = {
       .prepare('UPDATE users SET disabled_at = ?, updated_at = ? WHERE id = ?')
       .run(disabled ? nowIso() : null, nowIso(), id)
   },
+
+  /** Grants or revokes platform-admin access for an EXISTING user — the one-time bootstrap (`scripts/tenants-migrate-legacy.ts`) only sets this at creation, so a second or later admin needs this instead. */
+  setPlatformAdmin(id: string, isPlatformAdmin: boolean): void {
+    getControlDb()
+      .prepare('UPDATE users SET is_platform_admin = ?, updated_at = ? WHERE id = ?')
+      .run(isPlatformAdmin ? 1 : 0, nowIso(), id)
+  },
 }
 
 // ─── Tenants ────────────────────────────────────────────────────────────────
