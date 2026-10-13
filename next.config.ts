@@ -85,10 +85,21 @@ const nextConfig: NextConfig = {
             key: 'Content-Security-Policy',
             value: [
               "default-src 'self'",
-              // Next's dev server (Fast Refresh/HMR) needs 'unsafe-eval';
-              // production never does — no inline <script> tags anywhere in
-              // this app, and none should ever be added.
-              `script-src 'self'${isDev ? " 'unsafe-eval'" : ''}`,
+              // Next's dev server (Fast Refresh/HMR) needs 'unsafe-eval'.
+              // 'unsafe-inline' is required in EVERY mode, including
+              // production — the App Router itself injects inline
+              // <script> tags with no src= (the RSC streaming/hydration
+              // bootstrap payload, e.g. `self.__next_f.push(...)`) on
+              // every single page load; this has nothing to do with
+              // whether this app's OWN code ever writes an inline script
+              // (it doesn't). Without this, the page's initial HTML
+              // renders (SSR) but never hydrates — a blank, inert page
+              // with no console-visible error beyond a CSP violation.
+              // Found live in production after this exact deploy; the
+              // real fix is a per-request nonce (Next's documented CSP
+              // pattern, via middleware), tracked as a follow-up — this
+              // is the immediate, safe-enough fix to restore the site.
+              `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ''}`,
               // React's `style={{...}}` prop (used by a handful of
               // components — the template canvas, mainly) renders as an
               // inline `style` attribute, which needs 'unsafe-inline' here
