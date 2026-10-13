@@ -14,7 +14,7 @@ import type { ProductImageDetail } from '@/app/api/products/[productId]/route'
 import type { ProductRecord } from '@/db/types'
 import type { FramingResult } from '@/framing/types'
 
-const PAGE_SIZE = 40
+const PAGE_SIZE = 5
 
 interface Response {
   product: ProductRecord
