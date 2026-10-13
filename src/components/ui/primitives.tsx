@@ -11,6 +11,7 @@
 'use client'
 
 import * as React from 'react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 // ─── Button ──────────────────────────────────────────────────────────────────
@@ -562,5 +563,80 @@ export function Spinner({ className }: { className?: string }) {
       )}
       aria-hidden
     />
+  )
+}
+
+// ─── Pagination ──────────────────────────────────────────────────────────────
+
+/** Always includes page 1, the last page, and a window around the current page — '…' fills any gap, never a run of every page. */
+function pageWindow(page: number, totalPages: number): (number | '…')[] {
+  const pages = new Set([1, totalPages, page - 1, page, page + 1])
+  const sorted = [...pages].filter(p => p >= 1 && p <= totalPages).sort((a, b) => a - b)
+
+  const out: (number | '…')[] = []
+  for (let i = 0; i < sorted.length; i++) {
+    if (i > 0 && sorted[i] - sorted[i - 1] > 1) out.push('…')
+    out.push(sorted[i])
+  }
+  return out
+}
+
+export function Pagination({
+  page,
+  totalPages,
+  onChange,
+  className,
+}: {
+  page: number
+  totalPages: number
+  onChange: (page: number) => void
+  className?: string
+}) {
+  if (totalPages <= 1) return null
+
+  return (
+    <nav aria-label="Pagination" className={cn('flex items-center justify-center gap-1', className)}>
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label="Previous page"
+        disabled={page <= 1}
+        onClick={() => onChange(page - 1)}
+      >
+        <ChevronLeft size={14} />
+      </Button>
+
+      {pageWindow(page, totalPages).map((entry, index) =>
+        entry === '…' ? (
+          <span key={`ellipsis-${index}`} className="px-1 text-xs text-[var(--color-ink-subtle)]">
+            …
+          </span>
+        ) : (
+          <button
+            key={entry}
+            aria-current={entry === page ? 'page' : undefined}
+            onClick={() => onChange(entry)}
+            className={cn(
+              'numeric min-w-7 rounded-md px-2 py-1 text-xs font-medium transition-colors',
+              entry === page
+                ? 'bg-[var(--color-accent)] text-[var(--color-accent-ink)]'
+                : 'text-[var(--color-ink-subtle)] hover:bg-[var(--color-surface)] hover:text-[var(--color-ink)]'
+            )}
+          >
+            {entry}
+          </button>
+        )
+      )}
+
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label="Next page"
+        disabled={page >= totalPages}
+        onClick={() => onChange(page + 1)}
+      >
+        <ChevronRight size={14} />
+      </Button>
+    </nav>
   )
 }

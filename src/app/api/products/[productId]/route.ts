@@ -1,9 +1,16 @@
 /**
- * One product, with every image's full vision payload.
+ * One product, with its images' full vision payload — one page of them.
  *
  * The product detail page and its Vision Debug panel are the only consumers,
  * and they need the complete analysis — landmarks, masks, crop boxes,
- * confidences — so this returns the whole document rather than a summary.
+ * confidences — for images currently on screen, so each returned image still
+ * carries the whole document rather than a summary. What changed: this used
+ * to return EVERY image in the product this way at once, which meant a
+ * 200-image product shipped 200 full vision payloads (and 200 thumbnails
+ * mounted at once client-side) just to render a thumbnail strip where only
+ * one image is ever the selected/detailed one at a time. `page`/`pageSize`
+ * bound that to one page's worth; `imagesTotal` lets the client compute
+ * total pages without a second request.
  */
 
 import { NextRequest } from 'next/server'
@@ -14,6 +21,8 @@ import { handler, okWithEtag, notFound } from '@/lib/api-handler'
 import type { VisionMetadata } from '@/vision/types'
 
 export const dynamic = 'force-dynamic'
+
+const DEFAULT_PAGE_SIZE = 40
 
 export interface ProductImageDetail {
   id: string
@@ -46,7 +55,16 @@ export const GET = handler(
     const product = products.get(productId)
     if (!product) return notFound('product not found')
 
-    const details: ProductImageDetail[] = images.listByProduct(productId).map(image => {
+    const params = request.nextUrl.searchParams
+    const page = Math.max(1, Number(params.get('page')) || 1)
+    const pageSize = Math.min(200, Math.max(1, Number(params.get('pageSize')) || DEFAULT_PAGE_SIZE))
+
+    const allImages = images.listByProduct(productId)
+    const imagesTotal = allImages.length
+    const start = (page - 1) * pageSize
+    const pageImages = allImages.slice(start, start + pageSize)
+
+    const details: ProductImageDetail[] = pageImages.map(image => {
       const { metadata, stale } = getUsableAnalysis(image.sourceHash)
       return {
         id: image.id,
@@ -89,6 +107,13 @@ export const GET = handler(
       createdAt: creative.createdAt,
     }))
 
-    return okWithEtag(request, { product, images: details, creatives: productCreatives })
+    return okWithEtag(request, {
+      product,
+      images: details,
+      imagesTotal,
+      page,
+      pageSize,
+      creatives: productCreatives,
+    })
   }
 )

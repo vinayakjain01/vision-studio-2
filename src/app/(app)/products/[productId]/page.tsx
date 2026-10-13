@@ -36,7 +36,10 @@ export default async function ProductDetailPage({
           description={`${product.folderPath || 'root'}${product.category ? ` · ${product.category}` : ''} · ${product.imageCount} image${product.imageCount === 1 ? '' : 's'}`}
         />
         <PageBody>
-          <ProductDetailClient productId={productId} />
+          {/* key={productId}: a different product is a different image set,
+              page, and selected image entirely — remounting resets all of
+              that state for free instead of an effect syncing it by hand. */}
+          <ProductDetailClient key={productId} productId={productId} />
         </PageBody>
       </>
     )

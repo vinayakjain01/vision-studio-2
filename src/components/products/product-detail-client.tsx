@@ -5,7 +5,7 @@ import useSWR from 'swr'
 import { AlertTriangle, ImageOff, Loader2 } from 'lucide-react'
 import { fetcher } from '@/lib/api'
 import { jitterMs } from '@/lib/polling'
-import { Alert, Badge, Panel, Spinner, Tabs } from '@/components/ui/primitives'
+import { Alert, Badge, Pagination, Panel, Spinner, Tabs } from '@/components/ui/primitives'
 import { VisionDebugPanel } from '@/components/vision/vision-debug-panel'
 import { CreativeGallery } from '@/components/products/creative-gallery'
 import { ProductGeneratePanel } from '@/components/products/product-generate-panel'
@@ -14,9 +14,14 @@ import type { ProductImageDetail } from '@/app/api/products/[productId]/route'
 import type { ProductRecord } from '@/db/types'
 import type { FramingResult } from '@/framing/types'
 
+const PAGE_SIZE = 40
+
 interface Response {
   product: ProductRecord
   images: ProductImageDetail[]
+  imagesTotal: number
+  page: number
+  pageSize: number
   creatives: {
     id: string
     imageId: string
@@ -33,15 +38,26 @@ interface Response {
 }
 
 export function ProductDetailClient({ productId }: { productId: string }) {
-  const { data, isLoading, mutate } = useSWR<Response>(`/api/products/${productId}`, fetcher, {
-    refreshInterval: latest =>
-      latest?.images.some(i => i.visionStatus === 'pending' || i.visionStatus === 'processing')
-        ? jitterMs(2500)
-        : 0,
-  })
-
+  // No effect needed to reset this on productId change — the caller mounts
+  // this component with key={productId}, so a different product is a fresh
+  // instance with fresh state, not an existing one to synchronize.
+  const [page, setPage] = React.useState(1)
   const [selectedImageId, setSelectedImageId] = React.useState<string | null>(null)
   const [tab, setTab] = React.useState<'vision' | 'creatives'>('creatives')
+
+  const { data, isLoading, mutate } = useSWR<Response>(
+    `/api/products/${productId}?page=${page}&pageSize=${PAGE_SIZE}`,
+    fetcher,
+    {
+      keepPreviousData: true,
+      refreshInterval: latest =>
+        latest?.images.some(i => i.visionStatus === 'pending' || i.visionStatus === 'processing')
+          ? jitterMs(2500)
+          : 0,
+    }
+  )
+
+  const totalPages = data ? Math.max(1, Math.ceil(data.imagesTotal / data.pageSize)) : 1
 
   const selected = React.useMemo(() => {
     if (!data) return null
@@ -75,15 +91,16 @@ export function ProductDetailClient({ productId }: { productId: string }) {
     <div className="space-y-4">
       <ProductGeneratePanel
         productId={productId}
-        imageCount={data.images.length}
+        imageCount={data.imagesTotal}
         hasCreatives={data.creatives.length > 0}
         onGenerated={() => mutate()}
       />
 
       {/* Shot strip — only shown when the product has more than one image. */}
-      {data.images.length > 1 && (
-        <div className="flex gap-2 overflow-x-auto pb-1">
-          {data.images.map(image => (
+      {data.imagesTotal > 1 && (
+        <div className="space-y-2">
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {data.images.map(image => (
             <button
               key={image.id}
               onClick={() => setSelectedImageId(image.id)}
@@ -101,7 +118,18 @@ export function ProductDetailClient({ productId }: { productId: string }) {
                 </span>
               )}
             </button>
-          ))}
+            ))}
+          </div>
+
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs text-[var(--color-ink-subtle)]">
+                Showing {(page - 1) * data.pageSize + 1}
+                &ndash;{Math.min(page * data.pageSize, data.imagesTotal)} of {data.imagesTotal} photos
+              </p>
+              <Pagination page={page} totalPages={totalPages} onChange={setPage} />
+            </div>
+          )}
         </div>
       )}
 
