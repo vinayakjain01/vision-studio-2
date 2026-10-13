@@ -160,7 +160,7 @@ async function main() {
   }
 
   // ── Control plane: admin user + tenant + membership ───────────────────────
-  const controlDb = getControlDb()
+  let controlDb = getControlDb()
   migrateControl(controlDb)
 
   let admin = users.findByEmail(config.auth.adminEmail)
@@ -192,7 +192,14 @@ async function main() {
     // Close everything (the control-plane handle used just above, and any
     // tenant handle, though none is open yet) before touching files on disk
     // — an open WAL handle mid-move is exactly the corruption this script
-    // must not risk.
+    // must not risk. `closeDb()` tears down the GLOBAL control-db handle
+    // too, invalidating the `controlDb` reference above — re-acquired
+    // below, right before it's needed again. (Found the hard way: a real
+    // production migration with a non-empty legacy `jobs` table crashed
+    // here with "The database connection is not open" because the stale
+    // handle was passed into migrateTenantJobs further down — every
+    // existing test's fixture had an empty jobs table, which short-circuits
+    // before ever touching `controlDb` and so never exercised this path.)
     closeDb()
 
     const paths = tenantPaths(tenant.id)
@@ -210,6 +217,7 @@ async function main() {
 
   // Re-open fresh handles post-move and bring the tenant DB's schema current
   // (a no-op if it already was — `migrate()` is always idempotent).
+  controlDb = getControlDb()
   const freshTenantDb = openTenantDbById(tenant.id)
   migrate(freshTenantDb)
 
