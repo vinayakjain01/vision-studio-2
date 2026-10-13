@@ -9,7 +9,7 @@ import { jitterMs } from '@/lib/polling'
 import { DeleteButton } from '@/components/ui/delete-button'
 import { BulkGeneratePanel } from '@/components/products/bulk-generate-panel'
 import { humanize, percent } from '@/lib/utils'
-import { Badge, Button, EmptyState, Input, Panel, Select, Spinner } from '@/components/ui/primitives'
+import { Badge, EmptyState, Input, Pagination, Panel, Select, Spinner } from '@/components/ui/primitives'
 import type { ProductSummary } from '@/app/api/products/route'
 import type { ImportRecord } from '@/db/types'
 
@@ -19,25 +19,32 @@ interface Response {
   hasMore: boolean
 }
 
-const PAGE_SIZE = 60
+const PAGE_SIZE = 20
 
 export function ProductsClient() {
   const [search, setSearch] = React.useState('')
   const [debounced, setDebounced] = React.useState('')
   const [importId, setImportId] = React.useState('')
-  const [limit, setLimit] = React.useState(PAGE_SIZE)
+  const [page, setPage] = React.useState(1)
 
   // Debounce the search so typing does not fire a query per keystroke against
-  // a catalog of thousands.
+  // a catalog of thousands. Also resets to page 1 once the debounced term
+  // actually changes the query — not in a separate effect keyed on
+  // `debounced` (another synchronous setState-in-an-effect, same issue
+  // avoided elsewhere in this change), just alongside the state update that
+  // was already deferred into this timer.
   React.useEffect(() => {
-    const timer = setTimeout(() => setDebounced(search), 250)
+    const timer = setTimeout(() => {
+      setDebounced(search)
+      setPage(1)
+    }, 250)
     return () => clearTimeout(timer)
   }, [search])
 
   const { data: importsData } = useSWR<{ imports: ImportRecord[] }>('/api/imports', fetcher)
   const imports = importsData?.imports ?? []
 
-  const params = new URLSearchParams({ limit: String(limit) })
+  const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String((page - 1) * PAGE_SIZE) })
   if (debounced) params.set('search', debounced)
   if (importId) params.set('importId', importId)
 
@@ -51,6 +58,7 @@ export function ProductsClient() {
   })
 
   const products = data?.products ?? []
+  const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1
 
   return (
     <div className="space-y-4">
@@ -72,7 +80,10 @@ export function ProductsClient() {
           <Select
             aria-label="Master folder"
             value={importId}
-            onChange={event => setImportId(event.target.value)}
+            onChange={event => {
+              setImportId(event.target.value)
+              setPage(1)
+            }}
             className="w-52"
           >
             <option value="">All master folders</option>
@@ -131,11 +142,9 @@ export function ProductsClient() {
             ))}
           </div>
 
-          {data?.hasMore && (
+          {totalPages > 1 && (
             <div className="flex justify-center pt-2">
-              <Button variant="outline" onClick={() => setLimit(l => l + PAGE_SIZE)}>
-                Load more
-              </Button>
+              <Pagination page={page} totalPages={totalPages} onChange={setPage} />
             </div>
           )}
         </>
