@@ -20,19 +20,27 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-/** Roughly matches real Cloudinary generative-fill latency: most calls 2-6s, a long tail out to ~15s. */
-function sampleLatencyMs(): number {
-  const base = 2000 + Math.random() * 4000
-  const longTail = Math.random() < 0.1 ? Math.random() * 9000 : 0
+/**
+ * Centred on `centerMs` (±40% jitter) with a long tail out to 2x `centerMs`
+ * on ~10% of calls. `centerMs` defaults to 12s — Phase 1.3's own reported
+ * real-world Cloudinary generative-fill latency (see docs/ISSUES.md issue 4)
+ * — and is configurable via `VISION_STUDIO_LOADTEST_AI_EXTEND_LATENCY_MS` so
+ * `scripts/reproduce-issue4-slow-batch.ts` can sweep it without touching code.
+ */
+function sampleLatencyMs(centerMs: number): number {
+  const base = centerMs * (0.6 + Math.random() * 0.8)
+  const longTail = Math.random() < 0.1 ? Math.random() * centerMs : 0
   return base + longTail
 }
 
-export function createMockAiExtendProvider(options?: { rateLimitProbability?: number }): GenerativeFillProvider {
-  const rateLimitProbability = options?.rateLimitProbability ?? 0.08
+export function createMockAiExtendProvider(options?: { rateLimitProbability?: number; latencyMs?: number }): GenerativeFillProvider {
+  const rateLimitProbability =
+    options?.rateLimitProbability ?? Number(process.env.VISION_STUDIO_LOADTEST_AI_EXTEND_RATE_LIMIT_PROB ?? '0.08')
+  const latencyMs = options?.latencyMs ?? Number(process.env.VISION_STUDIO_LOADTEST_AI_EXTEND_LATENCY_MS ?? '12000')
 
   return {
     async generativeFill(request: GenerativeFillRequest): Promise<GenerativeFillResult> {
-      await sleep(sampleLatencyMs())
+      await sleep(sampleLatencyMs(latencyMs))
 
       if (Math.random() < rateLimitProbability) {
         throw new CloudinaryServiceError('(loadtest mock) rate limited', 'rate_limited', 1500)

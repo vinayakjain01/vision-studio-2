@@ -1,0 +1,25 @@
+Parsed 3414 [stage] events across 180 jobs.
+
+Aggregate time by stage (sorted by total time, descending):
+
+  stage                         count      total        avg % of total
+  queue_wait                     1377  98483.46s     71.52s      93.3%
+  defer:background_not_ready      646   3230.00s      5.00s       3.1%
+  defer:ai_extend_busy            551   2755.00s      5.00s       2.6%
+  background_fill:total            30    405.06s     13.50s       0.4%
+  ai_extend:provider_request       30    387.59s     12.92s       0.4%
+  vision:total                     90    164.67s      1.83s       0.2%
+  vision:parsing                   90     97.00s      1.08s       0.1%
+  vision:segmentation              90     21.72s      241ms       0.0%
+  render:total                     60     15.06s      251ms       0.0%
+  vision:face                      90     14.86s      165ms       0.0%
+  vision:pose                      90      8.50s       94ms       0.0%
+  vision:decode                    90      2.18s       24ms       0.0%
+  vision:analysis                  90      468ms        5ms       0.0%
+  vision:mask_persist              90      248ms        3ms       0.0%
+
+Grouped:
+  AI Extend wait (provider_request + defer:* polling): 6372.59s (6.0%)
+  Vision analysis sub-stages:                          309.64s (0.3%)
+
+Per-job logged-stage total: p50=40.22s p95=3394.64s max=5131.44s (n=180 jobs)

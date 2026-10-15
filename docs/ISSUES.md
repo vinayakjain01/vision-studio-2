@@ -228,6 +228,101 @@ extensive comments already warn against.
 alone, render without AI Extend, and render with AI Extend, against a
 reproducible mocked-latency harness.
 
+### Phase 1.3 — reproduction results (real data, not a guess)
+
+`scripts/reproduce-issue4-slow-batch.ts` reproduces the full pipeline
+(real ONNX vision analysis, real `sharp`/canvas render, Cloudinary's
+generative-fill call mocked at a configurable realistic latency — see
+`src/jobs/loadtest-mock-ai-extend.ts`) at the confirmed live settings
+(`JOB_VISION_CONCURRENCY=1`, `JOB_RENDER_CONCURRENCY=1`,
+`VISION_ORT_THREADS=3`, `CLOUDINARY_JOB_CONCURRENCY=4`,
+`AI_EXTEND_PER_TENANT_CONCURRENCY=2`). 30 synthetic photos, AI Extend
+latency sampled around a 12s centre (±40%, occasional 2x tail, ~8% 429
+rate) — this run's full `[stage]` log and parsed breakdown are in
+`docs/evidence/issue4-repro-30img-12s.log` and
+`docs/evidence/issue4-repro-30img-12s-stage-breakdown.txt`.
+
+| Phase | What it isolates | Result |
+|---|---|---|
+| A — vision analysis only | decode/pose/face/segmentation/parsing, concurrency=1 | 30 images in 56.9s → **31.6 img/min** |
+| B — render, no AI Extend | pure composite + encode, no network wait at all | 30 images in 4.1s → **436 img/min** |
+| C — render WITH AI Extend | the actual reported slow path | 30 images in 230.9s → **7.8 img/min** |
+
+**Confirmed, evidence-based findings:**
+
+1. **AI Extend wait is overwhelmingly the bottleneck, not vision or render
+   themselves.** Render-without-AI-Extend (Phase B) is ~56x faster than
+   render-with-AI-Extend (Phase C). Vision analysis (Phase A) is not
+   fast but is not the reported problem either — 1.9s/image average,
+   dominated by `vision:parsing` (segmentation post-processing, ~1.1s)
+   not model inference.
+2. **"Full-size image sent to the provider" is RULED OUT** — read
+   directly from `src/services/cloudinary-service.ts:270-275`: the
+   source photo is resized locally to its exact placed (canvas-relative)
+   size *before* upload. Cloudinary never receives the original-resolution
+   photo.
+3. **"Render supersampling" is a real, previously-unflagged contributor
+   to real-world (not mocked) latency.** `src/render/compositor.ts`'s
+   AI-Extend background request is built at the RENDER SURFACE
+   resolution — canvas × `config.render.supersample` (default 2) — not
+   at the final output canvas size (default `RENDER_OUTPUT_MAX_DIM=2048`,
+   so the generative-fill request is commonly asked to produce up to
+   ~4096px per side, 4x the pixel area of what's actually needed in the
+   final output. The code comment at `cloudinary-service.ts:238-249`
+   explains this is deliberate (matching resolution avoids a visible
+   seam between the sharp subject and a softer upscaled background) — so
+   this is not a free fix, but it is a genuine, previously-undocumented
+   reason real Cloudinary latency could run well above a generic
+   12s estimate: our mock samples a flat latency regardless of requested
+   canvas size, so this reproduction cannot quantify the real cost, only
+   flag that the request is larger than it needs to be for latency
+   purposes.
+4. **The fixed 5s poll (`BACKGROUND_FILL_POLL_MS`) produces a very large
+   number of defer/reclaim cycles** — 646 `defer:background_not_ready`
+   + 551 `defer:ai_extend_busy` events across just 30 images (1,197
+   total claim→defer round trips). Each cycle is cheap in isolation (the
+   worker never blocks; it moves on to the next claimable job), but this
+   is 1,197 extra SQLite writes (job claim + defer update) and queue
+   contention events for a 30-image batch — real, measurable overhead,
+   just not the dominant one at this batch size.
+5. **`AI_EXTEND_PER_TENANT_CONCURRENCY=2` sets a hard floor**: 30 fills
+   at ~12s each, 2 at a time, is a theoretical minimum of
+   `ceil(30/2) × 12s = 180s` if slots are always kept full. The observed
+   230.9s is close to that floor — the ~50s difference is poll-interval
+   slack (fills don't line up perfectly on slot boundaries) plus the
+   vision-completion prerequisite overlapping the batch start.
+
+**The open gap, stated plainly**: 7.8 img/min (7.7s/image) in this
+controlled single-tenant reproduction is **~4x faster** than the reported
+"30 images / 15 minutes" (~30s/image). This reproduction does **not**
+fully explain the reported severity on its own. The most likely
+remaining multipliers, in order of suspicion:
+   - **Concurrent load** — the original report describes real team usage,
+     not a single isolated batch; Phase 1.6 (3 concurrent
+     tenants/sessions) directly tests whether shared vision/render slots
+     under real concurrent usage multiply this further. Not yet run as
+     of this writing.
+   - **Real Cloudinary latency may exceed the assumed 12s centre** —
+     finding 3 above (supersampled canvas size) is a concrete,
+     evidence-based reason real latency could run higher than a generic
+     estimate; this reproduction's mock cannot measure it directly.
+   - **Real customer photos** are likely heavier than this reproduction's
+     synthetic 1200-1600px gradients (higher resolution, more complex
+     segmentation masks) — blocked on `LOCAL_ISSUE_DIR` for a genuine
+     before/after comparison (Phase 2/3's blocker applies here too).
+
+**Fix candidates this data actually supports** (to implement in Phase
+1.4, not yet done): event-driven wake-up for a completed background fill
+instead of fixed 5s polling (removes finding 4's overhead and the
+worst-case latency tail on the last poll before completion); size the
+AI-Extend request to the output canvas rather than the supersampled
+render surface, accepting a documented resolution tradeoff or
+compensating by upscaling only the background during compositing
+(addresses finding 3 — needs the render team to confirm the seam
+tradeoff is acceptable before shipping); raise
+`AI_EXTEND_PER_TENANT_CONCURRENCY`/`CLOUDINARY_JOB_CONCURRENCY` only
+after Phase 1.6's concurrent-load numbers are in, not blindly.
+
 ---
 
 ## Issue 5 — Floating model with head-space padding
