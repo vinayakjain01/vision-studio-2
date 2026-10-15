@@ -8,6 +8,7 @@ import { toast } from 'sonner'
 import { ArrowLeft, Ban, Download, Loader2, RotateCcw } from 'lucide-react'
 import { fetcher, patchJson } from '@/lib/api'
 import { jitterMs } from '@/lib/polling'
+import { useProgressStall } from '@/hooks/use-progress-stall'
 import { DeleteButton } from '@/components/ui/delete-button'
 import { PageHeader, PageBody } from '@/components/shell/page-header'
 import {
@@ -22,6 +23,16 @@ import {
 } from '@/components/ui/primitives'
 import { cn, formatSeconds, timeAgo } from '@/lib/utils'
 import type { BatchProgress } from '@/services/generation-service'
+
+/**
+ * User-facing stall threshold (Phase 1.5, docs/ISSUES.md issue 10) —
+ * deliberately well above the backend's own pool self-heal window
+ * (`config.jobs.stallThresholdMs`, 30s default): that's an internal
+ * recovery mechanism, not something a user should see evidence of. This is
+ * "has it actually been stuck long enough that a person watching the page
+ * would reasonably wonder", not an echo of the server's own retry cadence.
+ */
+const STALL_THRESHOLD_MS = 3 * 60_000
 
 interface Response extends BatchProgress {
   creatives?: {
@@ -55,6 +66,15 @@ export function BatchDetailClient({ batchId }: { batchId: string }) {
   const router = useRouter()
   const [busy, setBusy] = React.useState(false)
 
+  // Called unconditionally, ahead of the loading/empty early returns below —
+  // React's rules of hooks don't allow skipping it only on some renders.
+  // Falls back to a safe "no signal yet, not live" pair while `data` is
+  // still undefined; the stalled state can never be true before there's a
+  // batch to be stalled.
+  const live = data ? data.batch.status === 'running' || data.batch.status === 'queued' : false
+  const progressSignal = data ? data.batch.completedJobs + data.batch.failedJobs + data.batch.cancelledJobs : 0
+  const stalledMs = useProgressStall(progressSignal, live)
+
   const act = async (action: 'cancel' | 'retry') => {
     setBusy(true)
     try {
@@ -81,7 +101,7 @@ export function BatchDetailClient({ batchId }: { batchId: string }) {
   if (!data) return null
 
   const { batch, queue, progress, etaSeconds, failures, waitingForWorker } = data
-  const live = batch.status === 'running' || batch.status === 'queued'
+  const stalled = live && stalledMs >= STALL_THRESHOLD_MS
 
   return (
     <>
@@ -152,6 +172,21 @@ export function BatchDetailClient({ batchId }: { batchId: string }) {
       />
 
       <PageBody className="space-y-4">
+        {stalled && (
+          <Alert tone="warning" title={`No progress for ${Math.max(1, Math.floor(stalledMs / 60_000))} minute${Math.floor(stalledMs / 60_000) === 1 ? '' : 's'}`}>
+            <p>
+              This run may be stuck. The server has its own automatic recovery for a
+              wedged worker, but if this doesn&apos;t clear on its own, cancel the run
+              {batch.failedJobs > 0 ? ' or retry the failed jobs above' : ''}.
+            </p>
+            <div className="mt-2">
+              <Button size="sm" variant="outline" onClick={() => act('cancel')} disabled={busy}>
+                <Ban size={13} /> Cancel this run
+              </Button>
+            </div>
+          </Alert>
+        )}
+
         <Panel>
           <div className="space-y-3 px-4 py-4">
             <Progress value={progress} />

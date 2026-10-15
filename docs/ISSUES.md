@@ -697,9 +697,38 @@ before) cover the threshold boundary, the thrown-error path, and that
 `tenantId` is omitted for public/unauthenticated routes rather than
 printed as `undefined`.
 
-Still open: the UI "stalled, no progress for N min" state with
-Retry/Cancel, and streaming upload/ZIP verification — plus Phase 1.6's
-concurrent-login verification and Phase 1.7's soak test.
+The UI "stalled, no progress for N min" state with Retry/Cancel —
+done, on the main batch detail page (`src/components/generate/batch-
+detail-client.tsx`), the primary place a user watches a run's progress.
+New `src/hooks/use-progress-stall.ts` tracks how long a batch's
+`completedJobs + failedJobs + cancelledJobs` count has gone unchanged —
+deliberately NOT the batch's own `updatedAt`, which `batches.refresh()`
+stamps on every poll regardless of whether anything actually progressed,
+so it can't distinguish a stalled batch from one simply being polled.
+After 3 minutes with no change (well above the backend's own 30s pool
+self-heal window — a user should never see evidence of routine internal
+recovery), a warning `Alert` appears with a "Cancel this run" button,
+reusing the existing `PATCH /api/batches/[batchId]` cancel/retry actions
+already wired into this page (confirmed no new backend endpoint was
+needed).
+
+Honestly scoped: this repo has no frontend test infrastructure at all
+(`vitest.config.ts` is Node-only, zero `.test.tsx` files anywhere) — adding
+jsdom/React Testing Library for one hook was judged out of scope for this
+program. Verified via `tsc --noEmit`, lint (including the `react-hooks/
+purity` and `react-hooks/set-state-in-effect` rules, which caught a real
+`Date.now()`-in-a-ref-initializer issue and a synchronous-setState-in-
+effect issue on the first pass), and a full `next build` (confirms the
+'use client' boundary and bundling, not just types). **Not** verified
+with an actual live-browser run of a genuinely stalled batch — reproducing
+a real 3-minute stall needs either a very slow real job or patching the
+threshold down temporarily, neither done here. Only applied to the main
+batch detail page, not `bulk-generate-panel.tsx`/`product-generate-
+panel.tsx`'s smaller inline progress widgets (no cancel/retry affordance
+exists there at all currently) — left for a follow-up if wanted.
+
+Still open: streaming upload/ZIP verification at flat memory — plus
+Phase 1.6's concurrent-login verification and Phase 1.7's soak test.
 
 ---
 
