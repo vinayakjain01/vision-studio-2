@@ -727,7 +727,33 @@ batch detail page, not `bulk-generate-panel.tsx`/`product-generate-
 panel.tsx`'s smaller inline progress widgets (no cancel/retry affordance
 exists there at all currently) — left for a follow-up if wanted.
 
-Still open: streaming upload/ZIP verification at flat memory — plus
+Streaming upload/ZIP verification — checked, already correct, no change
+needed. Both paths were already fixed in earlier phases, confirmed by
+reading the current implementation rather than assumed from their own
+doc comments:
+  - **Upload** (`src/app/api/imports/[importId]/files/route.ts`): a prior
+    P0 fix already replaced a fully-buffered `request.formData()` with
+    busboy streaming each file part directly to a temp file on disk
+    while hashing incrementally — bytes are read off the wire once, never
+    held in full in memory, with both the per-file (`MAX_FILE_BYTES`,
+    enforced by busboy's own `limits.fileSize`) and per-request
+    (`MAX_REQUEST_BYTES` = 48MB, checked chunk-by-chunk, aborting the
+    stream early) caps enforced DURING the stream. 300 files in one
+    request scales in metadata only (one small tracking object per file,
+    no bytes retained) — memory stays flat regardless of file count.
+  - **ZIP** — there is no ZIP *upload*/import feature in this codebase at
+    all (confirmed: the only `archiver`/zip-library usage anywhere in
+    `src/` is the creatives *download* route) — consistent with issue 8's
+    own Phase 0 finding that direct zip import doesn't exist yet. The ZIP
+    *download* path (`src/app/api/creatives/download/route.ts`) was
+    already fixed in P4 (see its own extensive doc comment): `archiver`
+    reads/converts each creative's bytes just before appending it to the
+    archive, a few at a time (`config.render.zipInternalConcurrency`),
+    with output already streaming to the client — peak memory is bounded
+    by that concurrency, not by the archive's total size or creative
+    count.
+
+Phase 1.5 is now fully addressed. Remaining before Phase 1 can close:
 Phase 1.6's concurrent-login verification and Phase 1.7's soak test.
 
 ---
