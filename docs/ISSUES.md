@@ -198,15 +198,25 @@ table) — this is not a misconfiguration so much as a deliberately
 conservative default that was never revisited for this box's actual
 headroom.
 
-This alone doesn't fully explain "30s/image" without knowing each stage's
-actual duration — Phase 1.2/1.3's diagnostics (per-stage timing logs,
+**Second confirmed contributor**: `src/jobs/queue.ts:54` —
+`BACKGROUND_FILL_POLL_MS = 5_000`, a fixed 5-second poll/defer interval
+whenever a render job is waiting on its AI Extend background fill
+(`src/jobs/worker-entry.ts:205,223,268`). With `JOB_RENDER_CONCURRENCY=1`
+and real AI Extend latency well above 5s (the mock provider built for the
+P6 load test used a realistic 2–15s range), a batch with few images per
+template can leave the single render worker doing nothing but
+claim→check→defer→wait every 5 seconds for the full duration of each
+fill, rather than being re-queued the instant the fill actually
+completes — exactly the spec's own candidate hypothesis, now confirmed
+rather than just suspected.
+
+This still doesn't fully explain "30s/image" without knowing each stage's
+actual share — Phase 1.2/1.3's diagnostics (per-stage timing logs,
 `npm run diag`, the mocked-AI-Extend-latency reproduction) are the
-correct way to get real numbers rather than guessing further. Candidate
-contributors worth testing specifically, per the spec's own hypothesis
-list: AI Extend's fixed defer/poll granularity (worth checking
-`src/jobs/worker.ts`'s poll interval for `BackgroundNotReadyError`), full
-images being sent to Cloudinary rather than a resized version, and
-analysis running at full resolution regardless of what's actually needed.
+correct way to get real numbers rather than guessing further. Remaining
+candidates worth testing specifically: full images being sent to
+Cloudinary rather than a resized version, and analysis running at full
+resolution regardless of what's actually needed.
 
 **Fix plan**: build the Phase 1.2 diagnostics first, then let the
 reproduction's actual per-stage timeline decide which of the above (if

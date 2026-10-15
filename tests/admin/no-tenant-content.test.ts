@@ -7,9 +7,10 @@ import { createDefaultTemplate } from '@/templates/types'
 import { writeFileAtomic } from '@/storage/media-store'
 import { users } from '@/db/control-repositories'
 import { createSession } from '@/auth/session'
-import { listTenantsWithMetrics, getGlobalPanelStats } from '@/services/admin-service'
+import { listTenantsWithMetrics, getGlobalPanelStats, getDiagnostics } from '@/services/admin-service'
 import { GET as adminTenantsGet } from '@/app/api/admin/tenants/route'
 import { GET as adminGlobalGet } from '@/app/api/admin/global/route'
+import { GET as adminDiagGet } from '@/app/api/admin/diag/route'
 
 /**
  * P5 §5: "the admin UI and its APIs expose counts, sizes, and timings only.
@@ -117,6 +118,22 @@ describe('admin responses contain no tenant content', () => {
   it('GET /api/admin/global response body contains none of it', async () => {
     const request = makeRequest('http://localhost:3000/api/admin/global', { cookie: adminCookie })
     const res = await (adminGlobalGet as any)(request)
+    const text = await res.text()
+    for (const forbidden of FORBIDDEN_STRINGS) {
+      expect(text).not.toContain(forbidden)
+    }
+  })
+
+  it('getDiagnostics() contains none of it either', async () => {
+    const json = JSON.stringify(await getDiagnostics())
+    for (const forbidden of FORBIDDEN_STRINGS) {
+      expect(json).not.toContain(forbidden)
+    }
+  })
+
+  it('GET /api/admin/diag response body contains none of it', async () => {
+    const request = makeRequest('http://localhost:3000/api/admin/diag', { cookie: adminCookie })
+    const res = await (adminDiagGet as any)(request)
     const text = await res.text()
     for (const forbidden of FORBIDDEN_STRINGS) {
       expect(text).not.toContain(forbidden)

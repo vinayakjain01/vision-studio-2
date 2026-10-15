@@ -38,6 +38,7 @@
  */
 
 import * as queue from './queue'
+import { logStageTiming } from '@/lib/stage-timer'
 import { handleVisionJob, handleRenderJob, handleBackgroundFillJob, BackgroundNotReadyError } from './worker'
 import { CloudinaryServiceError } from '@/services/cloudinary-service'
 import { AiExtendQuotaExceededError, AiExtendBusyError } from './ai-extend-dispatcher'
@@ -122,6 +123,16 @@ async function runOne(kind: JobKind): Promise<boolean> {
   const job = queue.claim(kind, cfg.workerId)
   if (!job) return false
 
+  const jobStart = performance.now()
+  logStageTiming({
+    tenantId: job.tenantId,
+    jobId: job.id,
+    stage: 'queue_wait',
+    durationMs: Date.now() - new Date(job.createdAt).getTime(),
+    kind: job.kind,
+    attempt: job.attempts,
+  })
+
   queue.markRunning(job.id, cfg.workerId)
   post({
     type: 'job:started',
@@ -149,11 +160,30 @@ async function runOne(kind: JobKind): Promise<boolean> {
       job.kind === 'vision'
         ? handleVisionJob(job.payload as VisionJobPayload)
         : job.kind === 'background_fill'
-          ? handleBackgroundFillJob(job.payload as BackgroundFillJobPayload)
+          ? handleBackgroundFillJob(job.payload as BackgroundFillJobPayload, { jobId: job.id })
           : handleRenderJob(job.payload as RenderJobPayload, { batchId: job.batchId })
     )
 
     queue.complete(job.id, cfg.workerId, result as Record<string, unknown>)
+
+    logStageTiming({
+      tenantId: job.tenantId,
+      jobId: job.id,
+      stage: `${job.kind}:total`,
+      durationMs: performance.now() - jobStart,
+    })
+    // Vision analysis's own sub-stage breakdown (decode/analysis/mask_persist
+    // — see src/vision/engine.ts) rides along on the handler's result rather
+    // than being logged from inside the engine itself, same reasoning
+    // `durationMs` already followed before this change: the engine has no
+    // jobId/tenantId of its own to attach to a log line.
+    const timings = (result as { timings?: Record<string, number> } | null)?.timings
+    if (timings) {
+      for (const [stage, ms] of Object.entries(timings)) {
+        logStageTiming({ tenantId: job.tenantId, jobId: job.id, stage: `vision:${stage}`, durationMs: ms })
+      }
+    }
+
     post({
       type: 'job:done',
       workerId: cfg.workerId,
@@ -202,6 +232,7 @@ async function runOne(kind: JobKind): Promise<boolean> {
       // Capacity (concurrency or the rate limiter), not the request, was the
       // problem — identical in spirit to a Cloudinary rate-limit response,
       // so it gets the same short, attempt-refunded defer.
+      logStageTiming({ tenantId: job.tenantId, jobId: job.id, stage: 'defer:ai_extend_busy', durationMs: queue.BACKGROUND_FILL_POLL_MS })
       queue.defer(job.id, cfg.workerId, queue.BACKGROUND_FILL_POLL_MS, message, { refundAttempt: true })
       post({
         type: 'job:failed',
@@ -220,6 +251,7 @@ async function runOne(kind: JobKind): Promise<boolean> {
       // limit into permanently failed renders across a whole batch. Honor
       // Retry-After when Cloudinary sent one.
       const delayMs = err.retryAfterMs ?? queue.BACKGROUND_FILL_POLL_MS * 4
+      logStageTiming({ tenantId: job.tenantId, jobId: job.id, stage: 'defer:rate_limited', durationMs: delayMs })
       queue.defer(job.id, cfg.workerId, delayMs, message, { refundAttempt: true })
       post({
         type: 'job:failed',
@@ -265,6 +297,13 @@ async function runOne(kind: JobKind): Promise<boolean> {
       // forever. If it is NOT alive, the attempt is charged as before, so a
       // render that can never find its dependency still terminates.
       if (err.dependencyActive || job.attempts < job.maxAttempts) {
+        logStageTiming({
+          tenantId: job.tenantId,
+          jobId: job.id,
+          stage: 'defer:background_not_ready',
+          durationMs: queue.BACKGROUND_FILL_POLL_MS,
+          dependencyActive: err.dependencyActive ? 1 : 0,
+        })
         queue.defer(job.id, cfg.workerId, queue.BACKGROUND_FILL_POLL_MS, message, {
           refundAttempt: err.dependencyActive,
         })

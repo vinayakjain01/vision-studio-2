@@ -26,7 +26,8 @@
     "restore": "tsx scripts/restore.ts",
     "tenant:export": "tsx scripts/tenant-export.ts",
     "tenant:import": "tsx scripts/tenant-import.ts",
-    "loadtest": "tsx scripts/loadtest-multitenant.ts"
+    "loadtest": "tsx scripts/loadtest-multitenant.ts",
+    "diag": "tsx scripts/diag.ts"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.3",

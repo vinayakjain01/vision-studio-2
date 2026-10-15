@@ -247,4 +247,9 @@ export const ROUTE_MANIFEST: RouteEntry[] = [
     methods: ['GET'],
     note: 'platform-admin only; covered by admin-isolation.test.ts, not the per-ID matrix (see section comment above)',
   },
+  {
+    routePath: '/api/admin/diag',
+    methods: ['GET'],
+    note: 'platform-admin only; counts/sizes/timings only (same privacy boundary as /api/admin/global), covered by admin-isolation.test.ts, not the per-ID matrix (see section comment above)',
+  },
 ]

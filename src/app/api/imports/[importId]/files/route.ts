@@ -38,6 +38,7 @@ import { assertDiskSpaceAvailable } from '@/jobs/disk-guard'
 import { currentTenant } from '@/tenancy/context'
 import { tenantTmpDir } from '@/storage/media-store'
 import { handler, ok, badRequest, notFound } from '@/lib/api-handler'
+import { logStageTiming } from '@/lib/stage-timer'
 
 export const dynamic = 'force-dynamic'
 // Uploading a batch of full-resolution studio files takes longer than the
@@ -88,6 +89,8 @@ export const POST = handler(
     const cleanupAll = async () => {
       await Promise.all(allTempPaths.map(p => fsp.rm(p, { force: true }).catch(() => {})))
     }
+
+    const uploadStart = performance.now()
 
     try {
       const contentType = request.headers.get('content-type')
@@ -173,6 +176,15 @@ export const POST = handler(
       })
 
       await Promise.all(pending.map(p => p.done))
+
+      logStageTiming({
+        tenantId,
+        jobId: importId,
+        stage: 'upload',
+        durationMs: performance.now() - uploadStart,
+        files: pending.length,
+        bytes: totalBytes,
+      })
 
       if (requestTooLarge) {
         await cleanupAll()

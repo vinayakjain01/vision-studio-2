@@ -231,6 +231,147 @@ export async function getGlobalPanelStats(): Promise<GlobalPanelStats> {
   }
 }
 
+// ─── Diagnostics (Phase 1.2, docs/ISSUES.md) ───────────────────────────────
+
+export interface DiagJobBucket {
+  kind: string
+  status: string
+  count: number
+  /** Age of the OLDEST row in this bucket, in ms — the one worth investigating, not an average. */
+  oldestAgeMs: number
+}
+
+export interface DiagWorkerStat {
+  id: string
+  kinds: string[]
+  state: string
+  pid: number | null
+  /** null when /proc isn't available (non-Linux) or the read failed — never a reason to fail the whole report. */
+  rssMb: number | null
+}
+
+export interface DiagStalledCandidate {
+  jobId: string
+  tenantId: string
+  kind: string
+  attempts: number
+  maxAttempts: number
+  ageMs: number
+}
+
+export interface DiagReport {
+  generatedAt: string
+  jobsByBucket: DiagJobBucket[]
+  oldestClaimedOrRunning: { jobId: string; tenantId: string; kind: string; status: string; ageMs: number } | null
+  /** Jobs sitting at attempts >= maxAttempts - 1 but still pending/claimed/running — one defer/retry away from parking, worth a human glance even before they fail outright. */
+  deferralLoopCandidates: DiagStalledCandidate[]
+  workers: DiagWorkerStat[]
+  queueDepthTotal: number
+  eventLoopP99Ms: number | null
+  memory: {
+    rssMb: number
+    /** From process.constrainedMemory() (cgroup limit inside a container) — null outside one, e.g. bare Node on a VM with no cgroup limit set. */
+    limitMb: number | null
+  }
+}
+
+/** Linux-only (`/proc/<pid>/status`); returns null anywhere else or on any read failure — a missing number is never worth crashing the report over. */
+async function readRssMb(pid: number): Promise<number | null> {
+  try {
+    const text = await fs.readFile(`/proc/${pid}/status`, 'utf8')
+    const match = text.match(/^VmRSS:\s+(\d+)\s+kB$/m)
+    return match ? Math.round(Number(match[1]) / 1024) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Everything `npm run diag` (scripts/diag.ts) needs that only the live
+ * server process can answer — worker RSS, in-memory pool state, event-loop
+ * delay. The job-table breakdown is read fresh from control.db on every
+ * call; cheap (indexed by status/kind), no caching, since this is an
+ * on-demand operator tool, not a polled dashboard.
+ */
+export async function getDiagnostics(): Promise<DiagReport> {
+  const db = getControlDb()
+
+  const buckets = db
+    .prepare(
+      `SELECT kind, status, COUNT(*) AS count, MIN(created_at) AS oldest
+       FROM jobs GROUP BY kind, status`
+    )
+    .all() as { kind: string; status: string; count: number; oldest: string }[]
+  const now = Date.now()
+  const jobsByBucket: DiagJobBucket[] = buckets.map(b => ({
+    kind: b.kind,
+    status: b.status,
+    count: b.count,
+    oldestAgeMs: now - new Date(b.oldest).getTime(),
+  }))
+
+  const oldestRow = db
+    .prepare(
+      `SELECT id, tenant_id, kind, status, claimed_at FROM jobs
+       WHERE status IN ('claimed', 'running') ORDER BY claimed_at ASC LIMIT 1`
+    )
+    .get() as { id: string; tenant_id: string; kind: string; status: string; claimed_at: string } | undefined
+  const oldestClaimedOrRunning = oldestRow
+    ? {
+        jobId: oldestRow.id,
+        tenantId: oldestRow.tenant_id,
+        kind: oldestRow.kind,
+        status: oldestRow.status,
+        ageMs: now - new Date(oldestRow.claimed_at).getTime(),
+      }
+    : null
+
+  const deferralRows = db
+    .prepare(
+      `SELECT id, tenant_id, kind, attempts, max_attempts, created_at FROM jobs
+       WHERE status IN ('pending', 'claimed', 'running') AND attempts >= max_attempts - 1 AND max_attempts > 1
+       ORDER BY attempts DESC LIMIT 50`
+    )
+    .all() as { id: string; tenant_id: string; kind: string; attempts: number; max_attempts: number; created_at: string }[]
+  const deferralLoopCandidates: DiagStalledCandidate[] = deferralRows.map(r => ({
+    jobId: r.id,
+    tenantId: r.tenant_id,
+    kind: r.kind,
+    attempts: r.attempts,
+    maxAttempts: r.max_attempts,
+    ageMs: now - new Date(r.created_at).getTime(),
+  }))
+
+  const poolStatus = getPool().status()
+  const workers: DiagWorkerStat[] = await Promise.all(
+    poolStatus.workers.map(async w => ({
+      id: w.id,
+      kinds: w.kinds,
+      state: w.state,
+      pid: w.pid,
+      rssMb: w.pid ? await readRssMb(w.pid) : null,
+    }))
+  )
+
+  const globalQueue = queue.stats()
+  const eventLoop = getEventLoopStats()
+  const limitBytes = typeof process.constrainedMemory === 'function' ? process.constrainedMemory() : 0
+
+  return {
+    generatedAt: new Date(now).toISOString(),
+    jobsByBucket,
+    oldestClaimedOrRunning,
+    deferralLoopCandidates,
+    workers,
+    queueDepthTotal: globalQueue.pending + globalQueue.claimed + globalQueue.running,
+    eventLoopP99Ms: eventLoop?.p99Ms ?? null,
+    memory: {
+      rssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+      limitMb: limitBytes > 0 ? Math.round(limitBytes / 1024 / 1024) : null,
+    },
+  }
+}
+
 // ─── Actions ────────────────────────────────────────────────────────────────
 
 export class AdminActionError extends Error {}

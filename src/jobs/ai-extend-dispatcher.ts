@@ -38,6 +38,7 @@
 import { getControlDb, nowIso, transactionOn } from '@/db/client'
 import { quotas, usageCounters, currentPeriod } from '@/db/control-repositories'
 import { config } from '@/config'
+import { logStageTiming } from '@/lib/stage-timer'
 import {
   CloudinaryServiceError,
   cloudinaryProvider,
@@ -151,6 +152,8 @@ export interface DispatchOptions {
   tenantId: string
   /** Defaults to the real Cloudinary provider — overridden in tests with a mock satisfying `GenerativeFillProvider`. */
   provider?: GenerativeFillProvider
+  /** For the per-stage timing log (docs/ISSUES.md Phase 1.2) — optional so existing test call sites with no job in scope keep working unchanged. */
+  jobId?: string
 }
 
 /**
@@ -165,7 +168,7 @@ export async function dispatchGenerativeFill(
   options: DispatchOptions,
   request: GenerativeFillRequest
 ): Promise<GenerativeFillResult> {
-  const { tenantId, provider = cloudinaryProvider } = options
+  const { tenantId, provider = cloudinaryProvider, jobId } = options
   const period = currentPeriod()
 
   // ── Quota — before spending a call slot, let alone a credit. ──────────────
@@ -215,7 +218,11 @@ export async function dispatchGenerativeFill(
       }
 
       try {
+        const callStart = performance.now()
         const result = await provider.generativeFill(request)
+        if (jobId) {
+          logStageTiming({ tenantId, jobId, stage: 'ai_extend:provider_request', durationMs: performance.now() - callStart, attempt })
+        }
         usageCounters.incrementAiExtendCalls(tenantId, period)
         return result
       } catch (err) {

@@ -98,6 +98,10 @@ export async function handleVisionJob(payload: VisionJobPayload): Promise<Handle
       faces: metadata.faces.length,
       confidence: metadata.quality.overall,
       durationMs: metadata.durationMs,
+      // Per-sub-stage breakdown (decode/analysis/mask_persist) — logged by
+      // the caller (worker-entry.ts), which has the jobId/tenantId this
+      // function doesn't. Not persisted beyond the job's own `result` JSON.
+      timings: metadata.timings,
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -356,7 +360,8 @@ function ensureBackgroundFillQueued(payload: RenderJobPayload): void {
  * cached and spends nothing. Every generative fill is billed.
  */
 export async function handleBackgroundFillJob(
-  payload: BackgroundFillJobPayload
+  payload: BackgroundFillJobPayload,
+  context: { jobId?: string } = {}
 ): Promise<HandlerResult> {
   const { imageId, templateId, sourceHash } = payload
 
@@ -393,6 +398,7 @@ export async function handleBackgroundFillJob(
   const result = await dispatchGenerativeFill(
     {
       tenantId: currentTenant().tenantId,
+      jobId: context.jobId,
       // scripts/loadtest-multitenant.ts's real mode only — simulates
       // Cloudinary's latency/429 behavior without a network call or a real
       // credit. Never set outside that script; see
