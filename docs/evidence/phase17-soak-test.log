@@ -1,0 +1,330 @@
+=== Phase 1.7 soak test — stage breakdown (parsed via scripts/parse-stage-log.ts) ===
+Parsed 42678 [stage] events across 900 jobs.
+
+Aggregate time by stage (sorted by total time, descending):
+
+  stage                         count      total        avg % of total
+  queue_wait                    20139 9021131.06s    447.94s      98.8%
+  defer:background_not_ready    19234  96170.00s      5.00s       1.1%
+  background_fill:total           300   4505.06s     15.02s       0.0%
+  ai_extend:provider_request      300   3880.17s     12.93s       0.0%
+  vision:total                    300    611.97s      2.04s       0.0%
+  vision:parsing                  300    354.91s      1.18s       0.0%
+  render:total                    300    260.42s      868ms       0.0%
+  vision:segmentation             300     79.98s      267ms       0.0%
+  vision:face                     300     52.23s      174ms       0.0%
+  vision:pose                     300     29.80s       99ms       0.0%
+  defer:ai_extend_busy              5     25.00s      5.00s       0.0%
+  vision:decode                   300      7.46s       25ms       0.0%
+  vision:analysis                 300      1.87s        6ms       0.0%
+  vision:mask_persist             300      1.28s        4ms       0.0%
+
+Grouped:
+  AI Extend wait (provider_request + defer:* polling): 100075.17s (1.1%)
+  Vision analysis sub-stages:                          1139.49s (0.0%)
+
+Per-job logged-stage total: p50=567.86s p95=77884.89s max=87932.07s (n=900 jobs)
+
+=== First 100 lines of raw run log ===
+[soak] Phase 1.7 soak test — users=3 imagesPerUser=100 aiExtendLatencyMs=12000 data dir=C:\Users\DELL\AppData\Local\Temp\vs-soak-zVJgzS
+[pool] backfilled 25 hourly queue-wait rollup bucket(s)
+[pool] starting — 1 vision worker(s), 1 render worker(s), 4 background-fill worker(s), 3 ORT thread(s) each, staggered
+[soak] warming up workers (model load)...
+[soak] waiting for vision analysis to drain for every user...
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_S8Z2l8yFkqXhh1XS ms=838 kind=vision attempt=1
+[stage] stage=vision:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_S8Z2l8yFkqXhh1XS ms=4617
+[stage] stage=vision:decode tenantId=tnt_ad4XmGynOVagzqHh jobId=job_S8Z2l8yFkqXhh1XS ms=33
+[stage] stage=vision:pose tenantId=tnt_ad4XmGynOVagzqHh jobId=job_S8Z2l8yFkqXhh1XS ms=114
+[stage] stage=vision:face tenantId=tnt_ad4XmGynOVagzqHh jobId=job_S8Z2l8yFkqXhh1XS ms=186
+[stage] stage=vision:segmentation tenantId=tnt_ad4XmGynOVagzqHh jobId=job_S8Z2l8yFkqXhh1XS ms=289
+[stage] stage=vision:parsing tenantId=tnt_ad4XmGynOVagzqHh jobId=job_S8Z2l8yFkqXhh1XS ms=1224
+[stage] stage=vision:mask_persist tenantId=tnt_ad4XmGynOVagzqHh jobId=job_S8Z2l8yFkqXhh1XS ms=13
+[stage] stage=vision:analysis tenantId=tnt_ad4XmGynOVagzqHh jobId=job_S8Z2l8yFkqXhh1XS ms=21
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job__rJhUhT1NNBtfTnI ms=5460 kind=vision attempt=1
+[stage] stage=vision:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job__rJhUhT1NNBtfTnI ms=1961
+[stage] stage=vision:decode tenantId=tnt_ad4XmGynOVagzqHh jobId=job__rJhUhT1NNBtfTnI ms=30
+[stage] stage=vision:pose tenantId=tnt_ad4XmGynOVagzqHh jobId=job__rJhUhT1NNBtfTnI ms=114
+[stage] stage=vision:face tenantId=tnt_ad4XmGynOVagzqHh jobId=job__rJhUhT1NNBtfTnI ms=203
+[stage] stage=vision:segmentation tenantId=tnt_ad4XmGynOVagzqHh jobId=job__rJhUhT1NNBtfTnI ms=219
+[stage] stage=vision:parsing tenantId=tnt_ad4XmGynOVagzqHh jobId=job__rJhUhT1NNBtfTnI ms=1318
+[stage] stage=vision:mask_persist tenantId=tnt_ad4XmGynOVagzqHh jobId=job__rJhUhT1NNBtfTnI ms=4
+[stage] stage=vision:analysis tenantId=tnt_ad4XmGynOVagzqHh jobId=job__rJhUhT1NNBtfTnI ms=10
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_sJQTyr5PkXNAhXPR ms=7423 kind=vision attempt=1
+[stage] stage=vision:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_sJQTyr5PkXNAhXPR ms=2005
+[stage] stage=vision:decode tenantId=tnt_ad4XmGynOVagzqHh jobId=job_sJQTyr5PkXNAhXPR ms=26
+[stage] stage=vision:pose tenantId=tnt_ad4XmGynOVagzqHh jobId=job_sJQTyr5PkXNAhXPR ms=111
+[stage] stage=vision:face tenantId=tnt_ad4XmGynOVagzqHh jobId=job_sJQTyr5PkXNAhXPR ms=140
+[stage] stage=vision:segmentation tenantId=tnt_ad4XmGynOVagzqHh jobId=job_sJQTyr5PkXNAhXPR ms=237
+[stage] stage=vision:parsing tenantId=tnt_ad4XmGynOVagzqHh jobId=job_sJQTyr5PkXNAhXPR ms=1385
+[stage] stage=vision:mask_persist tenantId=tnt_ad4XmGynOVagzqHh jobId=job_sJQTyr5PkXNAhXPR ms=1
+[stage] stage=vision:analysis tenantId=tnt_ad4XmGynOVagzqHh jobId=job_sJQTyr5PkXNAhXPR ms=13
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_coz8m4QL8M1gXrLH ms=9430 kind=vision attempt=1
+[stage] stage=vision:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_coz8m4QL8M1gXrLH ms=2089
+[stage] stage=vision:decode tenantId=tnt_ad4XmGynOVagzqHh jobId=job_coz8m4QL8M1gXrLH ms=51
+[stage] stage=vision:pose tenantId=tnt_ad4XmGynOVagzqHh jobId=job_coz8m4QL8M1gXrLH ms=142
+[stage] stage=vision:face tenantId=tnt_ad4XmGynOVagzqHh jobId=job_coz8m4QL8M1gXrLH ms=223
+[stage] stage=vision:segmentation tenantId=tnt_ad4XmGynOVagzqHh jobId=job_coz8m4QL8M1gXrLH ms=337
+[stage] stage=vision:parsing tenantId=tnt_ad4XmGynOVagzqHh jobId=job_coz8m4QL8M1gXrLH ms=1246
+[stage] stage=vision:mask_persist tenantId=tnt_ad4XmGynOVagzqHh jobId=job_coz8m4QL8M1gXrLH ms=1
+[stage] stage=vision:analysis tenantId=tnt_ad4XmGynOVagzqHh jobId=job_coz8m4QL8M1gXrLH ms=3
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_LmAVzsYKWp_YgaIz ms=11520 kind=vision attempt=1
+[stage] stage=vision:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_LmAVzsYKWp_YgaIz ms=1968
+[stage] stage=vision:decode tenantId=tnt_ad4XmGynOVagzqHh jobId=job_LmAVzsYKWp_YgaIz ms=24
+[stage] stage=vision:pose tenantId=tnt_ad4XmGynOVagzqHh jobId=job_LmAVzsYKWp_YgaIz ms=101
+[stage] stage=vision:face tenantId=tnt_ad4XmGynOVagzqHh jobId=job_LmAVzsYKWp_YgaIz ms=195
+[stage] stage=vision:segmentation tenantId=tnt_ad4XmGynOVagzqHh jobId=job_LmAVzsYKWp_YgaIz ms=295
+[stage] stage=vision:parsing tenantId=tnt_ad4XmGynOVagzqHh jobId=job_LmAVzsYKWp_YgaIz ms=1266
+[stage] stage=vision:mask_persist tenantId=tnt_ad4XmGynOVagzqHh jobId=job_LmAVzsYKWp_YgaIz ms=1
+[stage] stage=vision:analysis tenantId=tnt_ad4XmGynOVagzqHh jobId=job_LmAVzsYKWp_YgaIz ms=3
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_oNv8Wrs4g7HtTh_y ms=13489 kind=vision attempt=1
+[stage] stage=vision:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_oNv8Wrs4g7HtTh_y ms=1905
+[stage] stage=vision:decode tenantId=tnt_ad4XmGynOVagzqHh jobId=job_oNv8Wrs4g7HtTh_y ms=27
+[stage] stage=vision:pose tenantId=tnt_ad4XmGynOVagzqHh jobId=job_oNv8Wrs4g7HtTh_y ms=88
+[stage] stage=vision:face tenantId=tnt_ad4XmGynOVagzqHh jobId=job_oNv8Wrs4g7HtTh_y ms=155
+[stage] stage=vision:segmentation tenantId=tnt_ad4XmGynOVagzqHh jobId=job_oNv8Wrs4g7HtTh_y ms=246
+[stage] stage=vision:parsing tenantId=tnt_ad4XmGynOVagzqHh jobId=job_oNv8Wrs4g7HtTh_y ms=1293
+[stage] stage=vision:mask_persist tenantId=tnt_ad4XmGynOVagzqHh jobId=job_oNv8Wrs4g7HtTh_y ms=1
+[stage] stage=vision:analysis tenantId=tnt_ad4XmGynOVagzqHh jobId=job_oNv8Wrs4g7HtTh_y ms=2
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H4mAeTqneqrM3gV2 ms=15395 kind=vision attempt=1
+[stage] stage=vision:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H4mAeTqneqrM3gV2 ms=1872
+[stage] stage=vision:decode tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H4mAeTqneqrM3gV2 ms=29
+[stage] stage=vision:pose tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H4mAeTqneqrM3gV2 ms=99
+[stage] stage=vision:face tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H4mAeTqneqrM3gV2 ms=216
+[stage] stage=vision:segmentation tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H4mAeTqneqrM3gV2 ms=332
+[stage] stage=vision:parsing tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H4mAeTqneqrM3gV2 ms=1103
+[stage] stage=vision:mask_persist tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H4mAeTqneqrM3gV2 ms=1
+[stage] stage=vision:analysis tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H4mAeTqneqrM3gV2 ms=2
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_rljrkIub4GW_jrjB ms=17269 kind=vision attempt=1
+[stage] stage=vision:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_rljrkIub4GW_jrjB ms=2866
+[stage] stage=vision:decode tenantId=tnt_ad4XmGynOVagzqHh jobId=job_rljrkIub4GW_jrjB ms=32
+[stage] stage=vision:pose tenantId=tnt_ad4XmGynOVagzqHh jobId=job_rljrkIub4GW_jrjB ms=107
+[stage] stage=vision:face tenantId=tnt_ad4XmGynOVagzqHh jobId=job_rljrkIub4GW_jrjB ms=158
+[stage] stage=vision:segmentation tenantId=tnt_ad4XmGynOVagzqHh jobId=job_rljrkIub4GW_jrjB ms=262
+[stage] stage=vision:parsing tenantId=tnt_ad4XmGynOVagzqHh jobId=job_rljrkIub4GW_jrjB ms=1184
+[stage] stage=vision:mask_persist tenantId=tnt_ad4XmGynOVagzqHh jobId=job_rljrkIub4GW_jrjB ms=11
+[stage] stage=vision:analysis tenantId=tnt_ad4XmGynOVagzqHh jobId=job_rljrkIub4GW_jrjB ms=14
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_mY4RfFT4W-tb7BoI ms=20136 kind=vision attempt=1
+[stage] stage=vision:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_mY4RfFT4W-tb7BoI ms=1807
+[stage] stage=vision:decode tenantId=tnt_ad4XmGynOVagzqHh jobId=job_mY4RfFT4W-tb7BoI ms=28
+[stage] stage=vision:pose tenantId=tnt_ad4XmGynOVagzqHh jobId=job_mY4RfFT4W-tb7BoI ms=82
+[stage] stage=vision:face tenantId=tnt_ad4XmGynOVagzqHh jobId=job_mY4RfFT4W-tb7BoI ms=204
+[stage] stage=vision:segmentation tenantId=tnt_ad4XmGynOVagzqHh jobId=job_mY4RfFT4W-tb7BoI ms=258
+[stage] stage=vision:parsing tenantId=tnt_ad4XmGynOVagzqHh jobId=job_mY4RfFT4W-tb7BoI ms=1160
+[stage] stage=vision:mask_persist tenantId=tnt_ad4XmGynOVagzqHh jobId=job_mY4RfFT4W-tb7BoI ms=1
+[stage] stage=vision:analysis tenantId=tnt_ad4XmGynOVagzqHh jobId=job_mY4RfFT4W-tb7BoI ms=5
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_gxXprCCyCOypHWYI ms=21944 kind=vision attempt=1
+[stage] stage=vision:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_gxXprCCyCOypHWYI ms=1703
+[stage] stage=vision:decode tenantId=tnt_ad4XmGynOVagzqHh jobId=job_gxXprCCyCOypHWYI ms=25
+[stage] stage=vision:pose tenantId=tnt_ad4XmGynOVagzqHh jobId=job_gxXprCCyCOypHWYI ms=94
+[stage] stage=vision:face tenantId=tnt_ad4XmGynOVagzqHh jobId=job_gxXprCCyCOypHWYI ms=150
+[stage] stage=vision:segmentation tenantId=tnt_ad4XmGynOVagzqHh jobId=job_gxXprCCyCOypHWYI ms=249
+[stage] stage=vision:parsing tenantId=tnt_ad4XmGynOVagzqHh jobId=job_gxXprCCyCOypHWYI ms=1106
+[stage] stage=vision:mask_persist tenantId=tnt_ad4XmGynOVagzqHh jobId=job_gxXprCCyCOypHWYI ms=1
+[stage] stage=vision:analysis tenantId=tnt_ad4XmGynOVagzqHh jobId=job_gxXprCCyCOypHWYI ms=6
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_hrb0DpCAaFAmdbWL ms=23648 kind=vision attempt=1
+[stage] stage=vision:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_hrb0DpCAaFAmdbWL ms=1713
+[stage] stage=vision:decode tenantId=tnt_ad4XmGynOVagzqHh jobId=job_hrb0DpCAaFAmdbWL ms=24
+[stage] stage=vision:pose tenantId=tnt_ad4XmGynOVagzqHh jobId=job_hrb0DpCAaFAmdbWL ms=84
+[stage] stage=vision:face tenantId=tnt_ad4XmGynOVagzqHh jobId=job_hrb0DpCAaFAmdbWL ms=136
+
+=== Last 200 lines of raw run log (includes RESULTS/PASS-FAIL) ===
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_7BJmEOnXifo9SaFm ms=1097695 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_7BJmEOnXifo9SaFm ms=5000 dependencyActive=1
+[pool] job job_7BJmEOnXifo9SaFm failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo 6739ca15093b)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K4DWVTyzc3HuJ3s5 ms=1097761 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K4DWVTyzc3HuJ3s5 ms=5000 dependencyActive=1
+[pool] job job_K4DWVTyzc3HuJ3s5 failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo f5364190d3c9)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_VqxSVh2oVqhn_liR ms=1097834 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_VqxSVh2oVqhn_liR ms=5000 dependencyActive=1
+[pool] job job_VqxSVh2oVqhn_liR failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo 1570b990cd1b)
+[stage] stage=queue_wait tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_kcT2YCjtttFb_ALJ ms=1097883 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_kcT2YCjtttFb_ALJ ms=5000 dependencyActive=1
+[pool] job job_kcT2YCjtttFb_ALJ failed (will retry): waiting for AI-extended background (template tpl_NrQl7U2yMRXgbPLg, photo 45ec0e7e92a8)
+[stage] stage=queue_wait tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_RZjAKs6c6k9HATpF ms=1097944 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_RZjAKs6c6k9HATpF ms=5000 dependencyActive=1
+[stage] stage=queue_wait tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_4rPezVmF1q1pLcYW ms=1098001 kind=render attempt=2
+[pool] job job_RZjAKs6c6k9HATpF failed (will retry): waiting for AI-extended background (template tpl_NrQl7U2yMRXgbPLg, photo f68e017c8d08)
+[stage] stage=defer:background_not_ready tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_4rPezVmF1q1pLcYW ms=5000 dependencyActive=1
+[pool] job job_4rPezVmF1q1pLcYW failed (will retry): waiting for AI-extended background (template tpl_NrQl7U2yMRXgbPLg, photo a34762cdf4b9)
+[stage] stage=ai_extend:provider_request tenantId=tnt_ad4XmGynOVagzqHh jobId=job_R0BFxcWF6NtkcGaE ms=8898 attempt=1
+[stage] stage=background_fill:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_R0BFxcWF6NtkcGaE ms=9574
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_zKCnCpoCvQJvJbVZ ms=1094828 kind=background_fill attempt=1
+[pool] woke 1 render job(s) waiting on background_fill job_R0BFxcWF6NtkcGaE (sourceHash=b212feb8ea4b templateId=tpl_S7vawvdHocgX63tO)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_2CQS7wYqm7ApoHBO ms=1101411 kind=render attempt=2
+[stage] stage=render:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_2CQS7wYqm7ApoHBO ms=811
+[stage] stage=queue_wait tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_UXOh89SgZ1JKJkaz ms=1102182 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_UXOh89SgZ1JKJkaz ms=5000 dependencyActive=1
+[pool] job job_UXOh89SgZ1JKJkaz failed (will retry): waiting for AI-extended background (template tpl_NrQl7U2yMRXgbPLg, photo 195433c570e3)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K67G7yKyploi1H1M ms=1102932 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K67G7yKyploi1H1M ms=5000 dependencyActive=1
+[pool] job job_K67G7yKyploi1H1M failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo 3e5db9b80c76)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_IqJm264y1wJ1zvy7 ms=1103002 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_IqJm264y1wJ1zvy7 ms=5000 dependencyActive=1
+[pool] job job_IqJm264y1wJ1zvy7 failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo c0a31dec784e)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H--WgpMvysw3fhYS ms=1103067 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H--WgpMvysw3fhYS ms=5000 dependencyActive=1
+[pool] job job_H--WgpMvysw3fhYS failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo 1ea267d15fad)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_7BJmEOnXifo9SaFm ms=1103143 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_7BJmEOnXifo9SaFm ms=5000 dependencyActive=1
+[pool] job job_7BJmEOnXifo9SaFm failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo 6739ca15093b)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K4DWVTyzc3HuJ3s5 ms=1103218 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K4DWVTyzc3HuJ3s5 ms=5000 dependencyActive=1
+[pool] job job_K4DWVTyzc3HuJ3s5 failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo f5364190d3c9)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_VqxSVh2oVqhn_liR ms=1103301 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_VqxSVh2oVqhn_liR ms=5000 dependencyActive=1
+[pool] job job_VqxSVh2oVqhn_liR failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo 1570b990cd1b)
+[stage] stage=queue_wait tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_kcT2YCjtttFb_ALJ ms=1103343 kind=render attempt=2
+[stage] stage=queue_wait tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_RZjAKs6c6k9HATpF ms=1103363 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_kcT2YCjtttFb_ALJ ms=5000 dependencyActive=1
+[pool] job job_kcT2YCjtttFb_ALJ failed (will retry): waiting for AI-extended background (template tpl_NrQl7U2yMRXgbPLg, photo 45ec0e7e92a8)
+[stage] stage=queue_wait tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_4rPezVmF1q1pLcYW ms=1103408 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_RZjAKs6c6k9HATpF ms=5000 dependencyActive=1
+[pool] job job_RZjAKs6c6k9HATpF failed (will retry): waiting for AI-extended background (template tpl_NrQl7U2yMRXgbPLg, photo f68e017c8d08)
+[stage] stage=defer:background_not_ready tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_4rPezVmF1q1pLcYW ms=5000 dependencyActive=1
+[pool] job job_4rPezVmF1q1pLcYW failed (will retry): waiting for AI-extended background (template tpl_NrQl7U2yMRXgbPLg, photo a34762cdf4b9)
+[stage] stage=ai_extend:provider_request tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_dRHN1ZIsXM3cn2RN ms=17260 attempt=1
+[stage] stage=background_fill:total tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_dRHN1ZIsXM3cn2RN ms=17809
+[stage] stage=queue_wait tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_1ilaZAqi_Zq_uLXn ms=1103694 kind=background_fill attempt=1
+[pool] woke 1 render job(s) waiting on background_fill job_dRHN1ZIsXM3cn2RN (sourceHash=45ec0e7e92a8 templateId=tpl_NrQl7U2yMRXgbPLg)
+[stage] stage=ai_extend:provider_request tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_vhk-1JieGJ_8Sq7P ms=10212 attempt=3
+[stage] stage=background_fill:total tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_vhk-1JieGJ_8Sq7P ms=37274
+[stage] stage=queue_wait tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_yuLcy8WGPr8P_HTE ms=1103910 kind=background_fill attempt=1
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K67G7yKyploi1H1M ms=1108756 kind=render attempt=2
+[stage] stage=queue_wait tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_UXOh89SgZ1JKJkaz ms=1108768 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K67G7yKyploi1H1M ms=5000 dependencyActive=1
+[pool] job job_K67G7yKyploi1H1M failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo 3e5db9b80c76)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_IqJm264y1wJ1zvy7 ms=1108858 kind=render attempt=2
+[stage] stage=ai_extend:provider_request tenantId=tnt_ad4XmGynOVagzqHh jobId=job_zKCnCpoCvQJvJbVZ ms=7706 attempt=1
+[stage] stage=background_fill:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_zKCnCpoCvQJvJbVZ ms=8192
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_POkuMZ1LvRjYoIFV ms=1102992 kind=background_fill attempt=1
+[stage] stage=ai_extend:provider_request tenantId=tnt_ad4XmGynOVagzqHh jobId=job_fAk57zmYY8FPhkZS ms=14467 attempt=1
+[stage] stage=background_fill:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_fAk57zmYY8FPhkZS ms=14982
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_i2WY-YQfH-euxUNN ms=1103451 kind=background_fill attempt=1
+[pool] woke 1 render job(s) waiting on background_fill job_fAk57zmYY8FPhkZS (sourceHash=3e5db9b80c76 templateId=tpl_S7vawvdHocgX63tO)
+[stage] stage=render:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_IqJm264y1wJ1zvy7 ms=797
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K67G7yKyploi1H1M ms=1109657 kind=render attempt=2
+[stage] stage=render:total tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_UXOh89SgZ1JKJkaz ms=855
+[stage] stage=queue_wait tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_kcT2YCjtttFb_ALJ ms=1109624 kind=render attempt=2
+[stage] stage=render:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K67G7yKyploi1H1M ms=702
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H--WgpMvysw3fhYS ms=1110362 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H--WgpMvysw3fhYS ms=5000 dependencyActive=1
+[pool] job job_H--WgpMvysw3fhYS failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo 1ea267d15fad)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_7BJmEOnXifo9SaFm ms=1110425 kind=render attempt=2
+[stage] stage=render:total tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_kcT2YCjtttFb_ALJ ms=764
+[stage] stage=queue_wait tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_RZjAKs6c6k9HATpF ms=1110391 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_7BJmEOnXifo9SaFm ms=5000 dependencyActive=1
+[pool] job job_7BJmEOnXifo9SaFm failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo 6739ca15093b)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K4DWVTyzc3HuJ3s5 ms=1110507 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_RZjAKs6c6k9HATpF ms=5000 dependencyActive=1
+[pool] job job_RZjAKs6c6k9HATpF failed (will retry): waiting for AI-extended background (template tpl_NrQl7U2yMRXgbPLg, photo f68e017c8d08)
+[stage] stage=queue_wait tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_4rPezVmF1q1pLcYW ms=1110490 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K4DWVTyzc3HuJ3s5 ms=5000 dependencyActive=1
+[pool] job job_K4DWVTyzc3HuJ3s5 failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo f5364190d3c9)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_VqxSVh2oVqhn_liR ms=1110606 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_4rPezVmF1q1pLcYW ms=5000 dependencyActive=1
+[pool] job job_4rPezVmF1q1pLcYW failed (will retry): waiting for AI-extended background (template tpl_NrQl7U2yMRXgbPLg, photo a34762cdf4b9)
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_VqxSVh2oVqhn_liR ms=5000 dependencyActive=1
+[pool] job job_VqxSVh2oVqhn_liR failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo 1570b990cd1b)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H--WgpMvysw3fhYS ms=1115889 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H--WgpMvysw3fhYS ms=5000 dependencyActive=1
+[pool] job job_H--WgpMvysw3fhYS failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo 1ea267d15fad)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_7BJmEOnXifo9SaFm ms=1115968 kind=render attempt=2
+[stage] stage=queue_wait tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_RZjAKs6c6k9HATpF ms=1115943 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_7BJmEOnXifo9SaFm ms=5000 dependencyActive=1
+[pool] job job_7BJmEOnXifo9SaFm failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo 6739ca15093b)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K4DWVTyzc3HuJ3s5 ms=1116036 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_RZjAKs6c6k9HATpF ms=5000 dependencyActive=1
+[pool] job job_RZjAKs6c6k9HATpF failed (will retry): waiting for AI-extended background (template tpl_NrQl7U2yMRXgbPLg, photo f68e017c8d08)
+[stage] stage=queue_wait tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_4rPezVmF1q1pLcYW ms=1116029 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K4DWVTyzc3HuJ3s5 ms=5000 dependencyActive=1
+[pool] job job_K4DWVTyzc3HuJ3s5 failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo f5364190d3c9)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_VqxSVh2oVqhn_liR ms=1116106 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_4rPezVmF1q1pLcYW ms=5000 dependencyActive=1
+[pool] job job_4rPezVmF1q1pLcYW failed (will retry): waiting for AI-extended background (template tpl_NrQl7U2yMRXgbPLg, photo a34762cdf4b9)
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_VqxSVh2oVqhn_liR ms=5000 dependencyActive=1
+[pool] job job_VqxSVh2oVqhn_liR failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo 1570b990cd1b)
+[stage] stage=ai_extend:provider_request tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_yuLcy8WGPr8P_HTE ms=8335 attempt=1
+[stage] stage=background_fill:total tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_yuLcy8WGPr8P_HTE ms=8737
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_7ZnNT0MnIODyhmx_ ms=1110494 kind=background_fill attempt=1
+[pool] woke 1 render job(s) waiting on background_fill job_yuLcy8WGPr8P_HTE (sourceHash=a34762cdf4b9 templateId=tpl_NrQl7U2yMRXgbPLg)
+[stage] stage=queue_wait tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_4rPezVmF1q1pLcYW ms=1116757 kind=render attempt=2
+[stage] stage=defer:ai_extend_busy tenantId=tnt_ad4XmGynOVagzqHh jobId=job_7ZnNT0MnIODyhmx_ ms=5000
+[pool] job job_7ZnNT0MnIODyhmx_ failed (will retry): AI Extend is at capacity (global or per-tenant concurrency) — try again shortly.
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_cTUXeLKjZrV5YeLB ms=1110915 kind=background_fill attempt=1
+[stage] stage=defer:ai_extend_busy tenantId=tnt_ad4XmGynOVagzqHh jobId=job_cTUXeLKjZrV5YeLB ms=5000
+[pool] job job_cTUXeLKjZrV5YeLB failed (will retry): AI Extend is at capacity (global or per-tenant concurrency) — try again shortly.
+[stage] stage=render:total tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_4rPezVmF1q1pLcYW ms=762
+[stage] stage=ai_extend:provider_request tenantId=tnt_ad4XmGynOVagzqHh jobId=job_i2WY-YQfH-euxUNN ms=8091 attempt=1
+[stage] stage=background_fill:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_i2WY-YQfH-euxUNN ms=8689
+[pool] woke 1 render job(s) waiting on background_fill job_i2WY-YQfH-euxUNN (sourceHash=6739ca15093b templateId=tpl_S7vawvdHocgX63tO)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_7BJmEOnXifo9SaFm ms=1118216 kind=render attempt=2
+[stage] stage=render:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_7BJmEOnXifo9SaFm ms=738
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H--WgpMvysw3fhYS ms=1121039 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H--WgpMvysw3fhYS ms=5000 dependencyActive=1
+[pool] job job_H--WgpMvysw3fhYS failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo 1ea267d15fad)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K4DWVTyzc3HuJ3s5 ms=1121133 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K4DWVTyzc3HuJ3s5 ms=5000 dependencyActive=1
+[pool] job job_K4DWVTyzc3HuJ3s5 failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo f5364190d3c9)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_VqxSVh2oVqhn_liR ms=1121198 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_VqxSVh2oVqhn_liR ms=5000 dependencyActive=1
+[pool] job job_VqxSVh2oVqhn_liR failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo 1570b990cd1b)
+[stage] stage=queue_wait tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_RZjAKs6c6k9HATpF ms=1121230 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_RZjAKs6c6k9HATpF ms=5000 dependencyActive=1
+[pool] job job_RZjAKs6c6k9HATpF failed (will retry): waiting for AI-extended background (template tpl_NrQl7U2yMRXgbPLg, photo f68e017c8d08)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_7ZnNT0MnIODyhmx_ ms=1116673 kind=background_fill attempt=1
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_cTUXeLKjZrV5YeLB ms=1117245 kind=background_fill attempt=1
+[stage] stage=defer:ai_extend_busy tenantId=tnt_ad4XmGynOVagzqHh jobId=job_cTUXeLKjZrV5YeLB ms=5000
+[pool] job job_cTUXeLKjZrV5YeLB failed (will retry): AI Extend is at capacity (global or per-tenant concurrency) — try again shortly.
+[stage] stage=ai_extend:provider_request tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_1ilaZAqi_Zq_uLXn ms=16759 attempt=1
+[stage] stage=background_fill:total tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_1ilaZAqi_Zq_uLXn ms=17329
+[pool] woke 1 render job(s) waiting on background_fill job_1ilaZAqi_Zq_uLXn (sourceHash=f68e017c8d08 templateId=tpl_NrQl7U2yMRXgbPLg)
+[stage] stage=queue_wait tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_RZjAKs6c6k9HATpF ms=1125432 kind=render attempt=2
+[stage] stage=ai_extend:provider_request tenantId=tnt_ad4XmGynOVagzqHh jobId=job_POkuMZ1LvRjYoIFV ms=16474 attempt=1
+[stage] stage=background_fill:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_POkuMZ1LvRjYoIFV ms=17046
+[pool] woke 1 render job(s) waiting on background_fill job_POkuMZ1LvRjYoIFV (sourceHash=1ea267d15fad templateId=tpl_S7vawvdHocgX63tO)
+[stage] stage=render:total tenantId=tnt_XaAKhWpRZ4IXJPxh jobId=job_RZjAKs6c6k9HATpF ms=740
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H--WgpMvysw3fhYS ms=1126234 kind=render attempt=2
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K4DWVTyzc3HuJ3s5 ms=1126590 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K4DWVTyzc3HuJ3s5 ms=5000 dependencyActive=1
+[pool] job job_K4DWVTyzc3HuJ3s5 failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo f5364190d3c9)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_VqxSVh2oVqhn_liR ms=1126672 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_VqxSVh2oVqhn_liR ms=5000 dependencyActive=1
+[pool] job job_VqxSVh2oVqhn_liR failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo 1570b990cd1b)
+[stage] stage=render:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_H--WgpMvysw3fhYS ms=765
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_cTUXeLKjZrV5YeLB ms=1123101 kind=background_fill attempt=1
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K4DWVTyzc3HuJ3s5 ms=1132027 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K4DWVTyzc3HuJ3s5 ms=5000 dependencyActive=1
+[pool] job job_K4DWVTyzc3HuJ3s5 failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo f5364190d3c9)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_VqxSVh2oVqhn_liR ms=1132106 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_VqxSVh2oVqhn_liR ms=5000 dependencyActive=1
+[pool] job job_VqxSVh2oVqhn_liR failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo 1570b990cd1b)
+[stage] stage=ai_extend:provider_request tenantId=tnt_ad4XmGynOVagzqHh jobId=job_7ZnNT0MnIODyhmx_ ms=13395 attempt=1
+[stage] stage=background_fill:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_7ZnNT0MnIODyhmx_ ms=14014
+[pool] woke 1 render job(s) waiting on background_fill job_7ZnNT0MnIODyhmx_ (sourceHash=f5364190d3c9 templateId=tpl_S7vawvdHocgX63tO)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K4DWVTyzc3HuJ3s5 ms=1137464 kind=render attempt=2
+[stage] stage=render:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_K4DWVTyzc3HuJ3s5 ms=721
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_VqxSVh2oVqhn_liR ms=1138187 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_ad4XmGynOVagzqHh jobId=job_VqxSVh2oVqhn_liR ms=5000 dependencyActive=1
+[pool] job job_VqxSVh2oVqhn_liR failed (will retry): waiting for AI-extended background (template tpl_S7vawvdHocgX63tO, photo 1570b990cd1b)
+[stage] stage=ai_extend:provider_request tenantId=tnt_ad4XmGynOVagzqHh jobId=job_cTUXeLKjZrV5YeLB ms=12159 attempt=1
+[stage] stage=background_fill:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_cTUXeLKjZrV5YeLB ms=12508
+[pool] woke 1 render job(s) waiting on background_fill job_cTUXeLKjZrV5YeLB (sourceHash=1570b990cd1b templateId=tpl_S7vawvdHocgX63tO)
+[stage] stage=queue_wait tenantId=tnt_ad4XmGynOVagzqHh jobId=job_VqxSVh2oVqhn_liR ms=1142274 kind=render attempt=2
+[stage] stage=render:total tenantId=tnt_ad4XmGynOVagzqHh jobId=job_VqxSVh2oVqhn_liR ms=869
+
+[soak] === RESULTS ===
+elapsed: 29.3 minutes
+drained before outer timeout: true
+stuck jobs (non-terminal at end): 0
+completed jobs with a non-null error (corrupt result): 0
+running_jobs counters at end: [{"tenantId":"tnt_ad4XmGynOVagzqHh","runningJobs":0},{"tenantId":"tnt_XaAKhWpRZ4IXJPxh","runningJobs":0},{"tenantId":"tnt_dR3zVTdAaqHlL9zA","runningJobs":0}]
+memory: min=76MB max=96MB growth=25.4% (117 samples)
+
+[soak] PASS/FAIL targets:
+  [PASS] drained within the outer timeout
+  [PASS] no stuck jobs — 0 found
+  [PASS] no corrupt completions — 0 found
+  [PASS] every tenant's running_jobs counter is zero
+  [PASS] memory growth under 50% — 25.4%
+
+[soak] OVERALL: PASS

@@ -806,8 +806,39 @@ doc comments:
     by that concurrency, not by the archive's total size or creative
     count.
 
-Phase 1.5 is now fully addressed. Remaining before Phase 1 can close:
-Phase 1.6's concurrent-login verification and Phase 1.7's soak test.
+Phase 1.5 is now fully addressed.
+
+---
+
+## Phase 1.7 — soak test
+
+**Status: PASS, all targets met.** `scripts/soak-test-phase17.ts` ran 3
+tenants x 100 images (300 images total) concurrently, real ONNX vision +
+real render + Cloudinary mocked at a realistic 12s, at the confirmed
+live settings — full results in `docs/evidence/phase17-soak-test.log`.
+
+| Target | Result |
+|---|---|
+| Drained within the outer timeout | **PASS** — 29.3 minutes total, matching the spec's own "30 minutes" framing for this workload size |
+| No stuck jobs at the end | **PASS** — 0 jobs left in a non-terminal (pending/claimed/running) status across all 3 tenants |
+| No corrupt completions | **PASS** — 0 completed jobs carrying a non-null error |
+| Every tenant's `running_jobs` counter back to zero | **PASS** — all 3 tenants |
+| Memory stayed flat (no unbounded growth) | **PASS** — 76MB -> 96MB, 25.4% growth over 117 samples across the full run, well under the 50% threshold and consistent with one-time setup cost (new tenant DB handles, fixture generation) rather than a leak — same caveat the original P6 load test's own memory-flat check already carried |
+
+No stuck-job or leak behavior was found under a sustained 300-image,
+3-tenant run at live settings. Combined with Phase 1.4's event-driven
+wake-up (visible firing throughout this run's log — `[pool] woke N
+render job(s)...`) and Phase 1.5's stall self-heal/worker recycling,
+this is the strongest evidence yet that the queue/pool itself is not
+the source of "the tool hangs and gets stuck" — the remaining open
+question (per issue 4's own "4x gap" finding) is whether REAL production
+conditions (heavier photos, true concurrent human usage, real — not
+mocked — Cloudinary latency) differ enough from this synthetic soak to
+still produce a hang in practice. That requires `LOCAL_ISSUE_DIR` and/or
+real production monitoring over time, not something a synthetic soak
+test running on this machine can settle on its own.
+
+**Phase 1 is now complete.**
 
 ---
 

@@ -30,7 +30,8 @@
     "diag": "tsx scripts/diag.ts",
     "reproduce:issue4": "tsx scripts/reproduce-issue4-slow-batch.ts",
     "parse:stage-log": "tsx scripts/parse-stage-log.ts",
-    "verify:issue6": "tsx scripts/verify-issue6-concurrency.ts"
+    "verify:issue6": "tsx scripts/verify-issue6-concurrency.ts",
+    "soak:phase17": "tsx scripts/soak-test-phase17.ts"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.3",
