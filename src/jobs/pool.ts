@@ -388,6 +388,7 @@ class WorkerPool {
           handle.currentJob = null
           this.completed++
           if (message.batchId) this.refreshBatch(message.tenantId, message.batchId)
+          if (message.kind === 'background_fill') this.wakeWaitingRenders(message)
           break
         case 'job:failed':
           handle.state = 'busy'
@@ -442,6 +443,34 @@ class WorkerPool {
     child.unref()
     this.handles.push(handle)
     return handle
+  }
+
+  /**
+   * Phase 1.4 (docs/ISSUES.md issue 4): a `background_fill` job just
+   * completed — immediately un-defer any `render` job waiting on exactly
+   * this (sourceHash, templateId), rather than leaving it to discover the
+   * fill is ready on its own next `BACKGROUND_FILL_POLL_MS` poll. An idle
+   * worker's own poll loop (worker-entry.ts's `loop()`) notices a
+   * newly-claimable job on its very next iteration, so this is the
+   * event-driven wake-up — the only remaining lever once a fill completes,
+   * since the render worker that deferred has already moved on to other
+   * work and isn't "waiting" on anything in-process.
+   */
+  private wakeWaitingRenders(message: Extract<WorkerMessage, { type: 'job:done' }>): void {
+    const payload = message.payload as { sourceHash?: string; templateId?: string } | null
+    if (!payload?.sourceHash || !payload.templateId) return
+    try {
+      const woken = queue.wakeRenderJobsWaitingOn(message.tenantId, payload.sourceHash, payload.templateId)
+      if (woken > 0) {
+        console.log(
+          `[pool] woke ${woken} render job(s) waiting on background_fill ${message.jobId} (sourceHash=${payload.sourceHash.slice(0, 12)} templateId=${payload.templateId})`
+        )
+      }
+    } catch (err) {
+      // Never let a wake-up failure take down job:done handling — the
+      // render(s) still self-heal on their own next poll either way.
+      console.warn(`[pool] wakeRenderJobsWaitingOn failed:`, (err as Error).message)
+    }
   }
 
   private refreshBatch(tenantId: string, batchId: string): void {

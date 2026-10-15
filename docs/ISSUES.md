@@ -311,17 +311,69 @@ remaining multipliers, in order of suspicion:
      segmentation masks) — blocked on `LOCAL_ISSUE_DIR` for a genuine
      before/after comparison (Phase 2/3's blocker applies here too).
 
-**Fix candidates this data actually supports** (to implement in Phase
-1.4, not yet done): event-driven wake-up for a completed background fill
-instead of fixed 5s polling (removes finding 4's overhead and the
-worst-case latency tail on the last poll before completion); size the
-AI-Extend request to the output canvas rather than the supersampled
-render surface, accepting a documented resolution tradeoff or
-compensating by upscaling only the background during compositing
-(addresses finding 3 — needs the render team to confirm the seam
-tradeoff is acceptable before shipping); raise
-`AI_EXTEND_PER_TENANT_CONCURRENCY`/`CLOUDINARY_JOB_CONCURRENCY` only
-after Phase 1.6's concurrent-load numbers are in, not blindly.
+### Phase 1.4 — what was actually fixed, and an honest look at what it did and didn't move
+
+Two of the six fix candidates the original spec listed were already
+implemented before this program started — confirmed by reading the code,
+not assumed: **"skip the provider when no padding is needed"**
+(`src/jobs/worker.ts:176-178`'s `hasOverflow(overflow)` check — the
+`ai_extend` path is never entered at all when there's no overflow to
+fill) and **"never re-upload cached work"**
+(`src/jobs/worker.ts:186-199`'s pre-render cache check against the
+derived-asset store, keyed by `(sourceHash, kind)`, plus
+`handleBackgroundFillJob`'s own cache check before calling Cloudinary).
+Neither needed a change; both are noted here so the final report doesn't
+list them as open gaps.
+
+**Implemented**: event-driven wake-up for a completed background fill,
+replacing part of the fixed-5s-poll cost. `src/jobs/queue.ts`'s new
+`wakeRenderJobsWaitingOn(tenantId, sourceHash, templateId)` is called
+from `src/jobs/pool.ts`'s `job:done` handler the instant a
+`background_fill` job completes — it immediately clears `available_at`
+on any `render` job deferred waiting on exactly that (photo, template)
+pair, so the render becomes claimable on the render worker's very next
+idle-poll iteration (capped at `MAX_IDLE_INTERVAL_MS` = 2s,
+`worker-entry.ts`) instead of waiting out the remaining portion of a
+fixed 5s window. Scoped strictly: matched by tenant AND exact
+(sourceHash, templateId), filters by `kind = 'render'` only (a
+`background_fill` job waiting on AI-Extend *capacity*, not on another
+fill, is correctly left untouched). Covered by 4 new tests in
+`tests/jobs/queue.test.ts` (wakes a matching deferred render; leaves a
+different sourceHash/templateId alone; never touches a `background_fill`
+job; never crosses tenants).
+
+**Measured, honestly — two different scenarios, two different outcomes:**
+
+| Scenario | Before | After | 
+|---|---|---|
+| 30-image bulk batch, Phase C (`docs/evidence/issue4-repro-30img-12s{,-after-wakeup-fix}.log`) | 230.9s, 7.8 img/min | 244.3s, 7.4 img/min |
+| Single interactive image (`docs/evidence/issue4-repro-1img-12s-after-wakeup-fix.log`) | up to 5s poll tail (by construction of the old fixed-interval code) | render re-claimed ~475ms after its fill completed (fill done at relative ms=8423, render re-claimed at ms=8898) |
+
+**The bulk-batch number did not improve — within run-to-run noise from
+the mock's own latency jitter (±40%, 8% rate-limit rate), if not
+slightly worse.** This is the correct, expected result once the
+mechanism is understood, not a failed fix: for a 30-image batch, overall
+wall-clock time is gated by `AI_EXTEND_PER_TENANT_CONCURRENCY=2`
+processing 30 fills in sequence (finding 5's `ceil(30/2) × 12s = 180s`
+floor) — by the time any one render's fill finishes, dozens of other
+renders are still waiting on fills that haven't even started yet, so
+shaving a few seconds off one render's own poll tail doesn't move the
+batch's completion time, which is set by the LAST fill to finish. The
+fix's real, confirmed value is the **single-image interactive case** —
+exactly the one path where there is no "other work to hide behind": a
+user generating one `ai_extend` creative now notices completion in
+roughly the fill's own latency plus one render-worker poll cycle
+(≤2s) rather than plus up to a full `BACKGROUND_FILL_POLL_MS` (5s).
+
+**Deliberately not done in this phase** (concurrency defaults, the
+supersampled-canvas-size issue, provider-capacity raises): each needs
+either Phase 1.6's concurrent-load numbers or a render-team decision on
+a visual-quality tradeoff before being touched, per finding 3's own
+caveat — raising `AI_EXTEND_PER_TENANT_CONCURRENCY`/
+`CLOUDINARY_JOB_CONCURRENCY` or `JOB_RENDER_CONCURRENCY` blindly, without
+that data, is exactly what this program's "no default changes without
+evidence" rule exists to prevent. No config default was changed in this
+phase.
 
 ---
 

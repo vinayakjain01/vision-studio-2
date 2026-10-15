@@ -71,6 +71,8 @@ export type WorkerMessage =
       tenantId: string
       batchId: string | null
       result: unknown
+      /** The completed job's own payload — lets the pool wake dependents (see `queue.wakeRenderJobsWaitingOn`) without a second DB read. */
+      payload: unknown
     }
   | {
       type: 'job:failed'
@@ -192,6 +194,7 @@ async function runOne(kind: JobKind): Promise<boolean> {
       tenantId: job.tenantId,
       batchId: job.batchId,
       result,
+      payload: job.payload,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)

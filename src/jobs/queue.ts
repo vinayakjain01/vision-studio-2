@@ -49,7 +49,7 @@
 import { getControlDb, getDb, nowIso, transactionOn, parseJson, type Db } from '@/db/client'
 import { newId } from '@/db/repositories'
 import { config } from '@/config'
-import type { JobKind, JobPayload, JobPriorityClass, JobRecord, JobStatus } from '@/db/types'
+import type { JobKind, JobPayload, JobPriorityClass, JobRecord, JobStatus, RenderJobPayload } from '@/db/types'
 
 export const BACKGROUND_FILL_POLL_MS = 5_000
 export const BACKGROUND_FILL_RETRY_COOLDOWN_MS = 20_000
@@ -408,6 +408,44 @@ export function defer(
     ).run(availableAt, note.slice(0, 2000), ts, jobId)
     decrementRunning(db, owned.tenantId)
   })
+}
+
+/**
+ * Phase 1.4 (docs/ISSUES.md issue 4): a `background_fill` job just completed
+ * for (sourceHash, templateId) — immediately un-defer any `render` jobs in
+ * this tenant that are sitting out `BACKGROUND_FILL_POLL_MS` waiting on
+ * exactly this fill (see `BackgroundNotReadyError`/`ensureBackgroundFillQueued`
+ * in `src/jobs/worker.ts`), instead of leaving them to discover it on their
+ * own next poll. Reproduction evidence (docs/evidence/issue4-repro-30img-12s*)
+ * showed 1,197 defer/reclaim cycles for a 30-image batch — this removes the
+ * tail wait on the LAST poll before a fill was already done, which is the
+ * only part of that cost an event-driven wake-up can actually remove (the
+ * cycles themselves are cheap; the wait they represent is the real cost).
+ *
+ * Payload is matched in application code, not SQL — the jobs table has no
+ * JSON index on `payload` and the candidate set (pending jobs currently
+ * deferred for one tenant) is always small, so a per-tenant scan plus a JS
+ * filter is simpler and safer than introducing `json_extract` for the first
+ * time in this codebase.
+ */
+export function wakeRenderJobsWaitingOn(tenantId: string, sourceHash: string, templateId: string): number {
+  const now = nowIso()
+  const candidates = getControlDb()
+    .prepare(
+      `SELECT * FROM jobs WHERE tenant_id = ? AND kind = 'render' AND status = 'pending' AND available_at IS NOT NULL AND available_at > ?`
+    )
+    .all(tenantId, now) as any[]
+
+  let woken = 0
+  for (const row of candidates) {
+    const payload = parseJson<RenderJobPayload>(row.payload, {} as RenderJobPayload)
+    if (payload.sourceHash !== sourceHash || payload.templateId !== templateId) continue
+    const info = getControlDb()
+      .prepare(`UPDATE jobs SET available_at = NULL, updated_at = ? WHERE id = ? AND status = 'pending'`)
+      .run(now, row.id)
+    if (info.changes > 0) woken++
+  }
+  return woken
 }
 
 /** Fail immediately without consuming remaining attempts — an environment problem, not a per-job one. See the original's doc comment. */

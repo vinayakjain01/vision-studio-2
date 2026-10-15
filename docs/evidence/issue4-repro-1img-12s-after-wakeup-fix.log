@@ -1,0 +1,88 @@
+[repro] issue 4 reproduction — images=1 aiExtendLatencyMs=12000 data dir=C:\Users\DELL\AppData\Local\Temp\vs-repro-issue4-YGD1P1
+[repro] live settings: JOB_VISION_CONCURRENCY=1 JOB_RENDER_CONCURRENCY=1 VISION_ORT_THREADS=3 CLOUDINARY_JOB_CONCURRENCY=4 AI_EXTEND_PER_TENANT_CONCURRENCY=2
+[pool] backfilled 25 hourly queue-wait rollup bucket(s)
+[pool] starting — 1 vision worker(s), 1 render worker(s), 4 background-fill worker(s), 3 ORT thread(s) each, staggered
+[repro] warming up workers (model load)...
+
+[repro] === Phase A: vision-analysis-only (1 images) ===
+[stage] stage=queue_wait tenantId=tnt_XV4AaYVtWYT14r6T jobId=job_hPa6eWd63_qfgzNJ ms=1012 kind=vision attempt=1
+[stage] stage=vision:total tenantId=tnt_XV4AaYVtWYT14r6T jobId=job_hPa6eWd63_qfgzNJ ms=4870
+[stage] stage=vision:decode tenantId=tnt_XV4AaYVtWYT14r6T jobId=job_hPa6eWd63_qfgzNJ ms=29
+[stage] stage=vision:pose tenantId=tnt_XV4AaYVtWYT14r6T jobId=job_hPa6eWd63_qfgzNJ ms=112
+[stage] stage=vision:face tenantId=tnt_XV4AaYVtWYT14r6T jobId=job_hPa6eWd63_qfgzNJ ms=200
+[stage] stage=vision:segmentation tenantId=tnt_XV4AaYVtWYT14r6T jobId=job_hPa6eWd63_qfgzNJ ms=296
+[stage] stage=vision:parsing tenantId=tnt_XV4AaYVtWYT14r6T jobId=job_hPa6eWd63_qfgzNJ ms=1158
+[stage] stage=vision:mask_persist tenantId=tnt_XV4AaYVtWYT14r6T jobId=job_hPa6eWd63_qfgzNJ ms=14
+[stage] stage=vision:analysis tenantId=tnt_XV4AaYVtWYT14r6T jobId=job_hPa6eWd63_qfgzNJ ms=25
+[repro] Phase A: 1/1 vision jobs in 6.1s (9.8 img/min)
+
+[repro] === Phase B: render WITHOUT ai_extend (1 images) ===
+[stage] stage=queue_wait tenantId=tnt_TdYmYWZiY79p9szv jobId=job_2m4UOPl6Mteu4TXj ms=290 kind=vision attempt=1
+[stage] stage=vision:total tenantId=tnt_TdYmYWZiY79p9szv jobId=job_2m4UOPl6Mteu4TXj ms=2572
+[stage] stage=vision:decode tenantId=tnt_TdYmYWZiY79p9szv jobId=job_2m4UOPl6Mteu4TXj ms=26
+[stage] stage=vision:pose tenantId=tnt_TdYmYWZiY79p9szv jobId=job_2m4UOPl6Mteu4TXj ms=103
+[stage] stage=vision:face tenantId=tnt_TdYmYWZiY79p9szv jobId=job_2m4UOPl6Mteu4TXj ms=128
+[stage] stage=vision:segmentation tenantId=tnt_TdYmYWZiY79p9szv jobId=job_2m4UOPl6Mteu4TXj ms=210
+[stage] stage=vision:parsing tenantId=tnt_TdYmYWZiY79p9szv jobId=job_2m4UOPl6Mteu4TXj ms=1098
+[stage] stage=vision:mask_persist tenantId=tnt_TdYmYWZiY79p9szv jobId=job_2m4UOPl6Mteu4TXj ms=12
+[stage] stage=vision:analysis tenantId=tnt_TdYmYWZiY79p9szv jobId=job_2m4UOPl6Mteu4TXj ms=20
+[stage] stage=queue_wait tenantId=tnt_TdYmYWZiY79p9szv jobId=job_XxkNfhPneuW7vh7Q ms=45 kind=render attempt=1
+[stage] stage=render:total tenantId=tnt_TdYmYWZiY79p9szv jobId=job_XxkNfhPneuW7vh7Q ms=143
+[repro] Phase B: 1/1 render jobs (no AI Extend) in 0.5s (115.6 img/min)
+
+[repro] === Phase C: render WITH ai_extend, mocked latency=12000ms (1 images) ===
+[stage] stage=queue_wait tenantId=tnt_f6K7NEmfHhNIkxK8 jobId=job_HUm88aYcWRTEClMB ms=177 kind=vision attempt=1
+[stage] stage=vision:total tenantId=tnt_f6K7NEmfHhNIkxK8 jobId=job_HUm88aYcWRTEClMB ms=2520
+[stage] stage=vision:decode tenantId=tnt_f6K7NEmfHhNIkxK8 jobId=job_HUm88aYcWRTEClMB ms=24
+[stage] stage=vision:pose tenantId=tnt_f6K7NEmfHhNIkxK8 jobId=job_HUm88aYcWRTEClMB ms=96
+[stage] stage=vision:face tenantId=tnt_f6K7NEmfHhNIkxK8 jobId=job_HUm88aYcWRTEClMB ms=139
+[stage] stage=vision:segmentation tenantId=tnt_f6K7NEmfHhNIkxK8 jobId=job_HUm88aYcWRTEClMB ms=271
+[stage] stage=vision:parsing tenantId=tnt_f6K7NEmfHhNIkxK8 jobId=job_HUm88aYcWRTEClMB ms=994
+[stage] stage=vision:mask_persist tenantId=tnt_f6K7NEmfHhNIkxK8 jobId=job_HUm88aYcWRTEClMB ms=8
+[stage] stage=vision:analysis tenantId=tnt_f6K7NEmfHhNIkxK8 jobId=job_HUm88aYcWRTEClMB ms=17
+[stage] stage=queue_wait tenantId=tnt_f6K7NEmfHhNIkxK8 jobId=job_nVQS-ErbHhkfPJPT ms=252 kind=render attempt=1
+[stage] stage=defer:background_not_ready tenantId=tnt_f6K7NEmfHhNIkxK8 jobId=job_nVQS-ErbHhkfPJPT ms=5000 dependencyActive=0
+[pool] job job_nVQS-ErbHhkfPJPT failed (will retry): waiting for AI-extended background (template tpl_QfH6j8me5noy35Xw, photo 65c5b150c1c3)
+[stage] stage=queue_wait tenantId=tnt_f6K7NEmfHhNIkxK8 jobId=job_mFeeNE9wzWB4xq9K ms=75 kind=background_fill attempt=1
+[stage] stage=queue_wait tenantId=tnt_f6K7NEmfHhNIkxK8 jobId=job_nVQS-ErbHhkfPJPT ms=5611 kind=render attempt=2
+[stage] stage=defer:background_not_ready tenantId=tnt_f6K7NEmfHhNIkxK8 jobId=job_nVQS-ErbHhkfPJPT ms=5000 dependencyActive=1
+[pool] job job_nVQS-ErbHhkfPJPT failed (will retry): waiting for AI-extended background (template tpl_QfH6j8me5noy35Xw, photo 65c5b150c1c3)
+[stage] stage=ai_extend:provider_request tenantId=tnt_f6K7NEmfHhNIkxK8 jobId=job_mFeeNE9wzWB4xq9K ms=7721 attempt=1
+[stage] stage=background_fill:total tenantId=tnt_f6K7NEmfHhNIkxK8 jobId=job_mFeeNE9wzWB4xq9K ms=8423
+[pool] woke 1 render job(s) waiting on background_fill job_mFeeNE9wzWB4xq9K (sourceHash=65c5b150c1c3 templateId=tpl_QfH6j8me5noy35Xw)
+[stage] stage=queue_wait tenantId=tnt_f6K7NEmfHhNIkxK8 jobId=job_nVQS-ErbHhkfPJPT ms=8898 kind=render attempt=2
+[stage] stage=render:total tenantId=tnt_f6K7NEmfHhNIkxK8 jobId=job_nVQS-ErbHhkfPJPT ms=271
+[repro] Phase C: 1/1 render jobs (WITH AI Extend) in 9.2s (6.5 img/min)
+[repro] Phase C: 1 background_fill jobs completed
+
+[repro] === SUMMARY (json) ===
+{
+  "phaseA": {
+    "imageCount": 1,
+    "importId": "imp_ins-Sovj7Nf8vaws",
+    "drained": true,
+    "completed": 1,
+    "failed": 0,
+    "elapsedMs": 6094,
+    "imagesPerMinute": 9.845749917952084
+  },
+  "phaseB": {
+    "imageCount": 1,
+    "queued": 1,
+    "drained": true,
+    "completed": 1,
+    "failed": 0,
+    "elapsedMs": 519,
+    "imagesPerMinute": 115.60693641618496
+  },
+  "phaseC": {
+    "imageCount": 1,
+    "queued": 1,
+    "drained": true,
+    "completed": 1,
+    "fillJobsCompleted": 1,
+    "failed": 0,
+    "elapsedMs": 9186,
+    "imagesPerMinute": 6.531678641410842
+  }
+}

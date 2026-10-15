@@ -256,6 +256,109 @@ describe('queue: enqueue/claim/lifecycle against control.db', () => {
 })
 
 /**
+ * Phase 1.4 (docs/ISSUES.md issue 4): `wakeRenderJobsWaitingOn` is the
+ * event-driven replacement for "wait out the full BACKGROUND_FILL_POLL_MS
+ * and check again" — `src/jobs/pool.ts` calls it the instant a
+ * `background_fill` job completes.
+ */
+describe('queue: wakeRenderJobsWaitingOn() — Phase 1.4 event-driven wake-up', () => {
+  beforeEach(() => {
+    const db = getControlDb()
+    migrateControl(db)
+    db.exec('DELETE FROM jobs')
+    db.exec('DELETE FROM tenant_queue_state')
+    db.exec('DELETE FROM memberships')
+    db.exec('DELETE FROM sessions')
+    db.exec('DELETE FROM users')
+    db.exec('DELETE FROM tenants')
+  })
+
+  it('un-defers a render job waiting on exactly this (sourceHash, templateId)', () => {
+    const tenant = createTestTenant('WakeMatch')
+    const { ids } = queue.enqueue(tenant.tenantId, [
+      {
+        kind: 'render',
+        payload: { imageId: 'img1', productId: 'prod1', templateId: 'tpl1', sourceHash: 'hash1' },
+      },
+    ])
+    const claimed = queue.claim('render', 'worker-1')
+    expect(claimed?.id).toBe(ids[0])
+    queue.defer(ids[0], 'worker-1', 5000, 'waiting for AI-extended background', { refundAttempt: true })
+
+    const before = queue.get(tenant.tenantId, ids[0])
+    expect(before?.availableAt).toBeTruthy()
+    expect(new Date(before!.availableAt!).getTime()).toBeGreaterThan(Date.now())
+
+    const woken = queue.wakeRenderJobsWaitingOn(tenant.tenantId, 'hash1', 'tpl1')
+    expect(woken).toBe(1)
+
+    const after = queue.get(tenant.tenantId, ids[0])
+    expect(after?.availableAt).toBeNull()
+    expect(after?.status).toBe('pending')
+
+    // Immediately claimable now, rather than waiting out the deferred delay.
+    const reclaimed = queue.claim('render', 'worker-2')
+    expect(reclaimed?.id).toBe(ids[0])
+  })
+
+  it('does not wake a render job deferred for a DIFFERENT (sourceHash, templateId)', () => {
+    const tenant = createTestTenant('WakeMismatch')
+    const { ids } = queue.enqueue(tenant.tenantId, [
+      {
+        kind: 'render',
+        payload: { imageId: 'img1', productId: 'prod1', templateId: 'tpl1', sourceHash: 'hash1' },
+      },
+    ])
+    queue.claim('render', 'worker-1')
+    queue.defer(ids[0], 'worker-1', 5000, 'waiting for AI-extended background', { refundAttempt: true })
+
+    // A DIFFERENT fill (different template) completing must not disturb this one.
+    const woken = queue.wakeRenderJobsWaitingOn(tenant.tenantId, 'hash1', 'tpl-other')
+    expect(woken).toBe(0)
+
+    const after = queue.get(tenant.tenantId, ids[0])
+    expect(after?.availableAt).toBeTruthy()
+  })
+
+  it('never wakes a background_fill job — only render jobs depend on a fill this way', () => {
+    const tenant = createTestTenant('WakeKindFilter')
+    const { ids } = queue.enqueue(tenant.tenantId, [
+      {
+        kind: 'background_fill',
+        payload: { imageId: 'img1', productId: 'prod1', templateId: 'tpl1', sourceHash: 'hash1' },
+      },
+    ])
+    queue.claim('background_fill', 'worker-1')
+    queue.defer(ids[0], 'worker-1', 5000, 'AI Extend is at capacity', { refundAttempt: true })
+
+    const woken = queue.wakeRenderJobsWaitingOn(tenant.tenantId, 'hash1', 'tpl1')
+    expect(woken).toBe(0)
+
+    const after = queue.get(tenant.tenantId, ids[0])
+    expect(after?.availableAt).toBeTruthy()
+  })
+
+  it('is scoped to its own tenant — never wakes a matching job belonging to another tenant', () => {
+    const tenantA = createTestTenant('WakeTenantA')
+    const tenantB = createTestTenant('WakeTenantB')
+    const { ids } = queue.enqueue(tenantB.tenantId, [
+      {
+        kind: 'render',
+        payload: { imageId: 'img1', productId: 'prod1', templateId: 'tpl1', sourceHash: 'hash1' },
+      },
+    ])
+    queue.claim('render', 'worker-1')
+    queue.defer(ids[0], 'worker-1', 5000, 'waiting for AI-extended background', { refundAttempt: true })
+
+    const woken = queue.wakeRenderJobsWaitingOn(tenantA.tenantId, 'hash1', 'tpl1')
+    expect(woken).toBe(0)
+
+    const after = queue.get(tenantB.tenantId, ids[0])
+    expect(after?.availableAt).toBeTruthy()
+  })
+})
+
+/**
  * P3 moves `jobs` into ONE physical table shared by every tenant — unlike
  * batches, products, etc., which stay in separate per-tenant DB FILES where
  * cross-tenant access is structurally impossible. These tests prove the
