@@ -445,6 +445,59 @@ needing new code.
 tenant) both report queue wait and web p95 per user; no request blocks
 indefinitely.
 
+### Phase 1.6 — verification results (real data)
+
+`scripts/verify-issue6-concurrency.ts` ran both scenarios against a real
+server (real ONNX vision, real render, Cloudinary mocked at 4s) at the
+confirmed live settings, 10 images per user/session — full log in
+`docs/evidence/issue6-concurrency-verification.log`:
+
+| Scenario | Per-user queue wait | Poll p95 (web latency) |
+|---|---|---|
+| A — 3 different tenants | 48.4s / 49.2s / 48.4s (spread: **0.8s**) | 14-23ms, all users |
+| B — 3 sessions, same account | 32.1s / 105.1s / 66.7s (spread: **72.9s**) | 21-22ms, all sessions |
+
+**Scenario A: confirmed fair, no cross-tenant blocking.** Three
+different tenants running the identical workload concurrently finished
+within 0.8s of each other — the multi-tenancy scheduler's per-tenant
+fairness holds under real load at live settings, not just the P6 load
+test's synthetic fast-mode. Web p95 stayed under 25ms for every tenant
+throughout — no evidence any tenant's requests were starved by another's
+work.
+
+**Scenario B: a real, measurable disparity — but not a scheduler bug.**
+One session (105s) took 3.3x longer than another (32s) despite
+identical workloads submitted at the same time. Root cause, read
+directly from the per-stage logs this run produced: all three sessions
+belong to the SAME tenant, so all 30 images (3 sessions x 10) compete
+for that ONE tenant's shared `AI_EXTEND_PER_TENANT_CONCURRENCY=2` fill
+slots and its share of the global render concurrency — there is no
+separate "fairness between batches of the same tenant" layer, only
+fairness BETWEEN tenants. Jobs are served in roughly enqueue order
+within one tenant's own backlog, so whichever session's images interleave
+less favorably in the claim order simply waits longer — the AGGREGATE
+work (30 images against 2 fill slots) takes however long it takes
+regardless of which session's progress bar that time shows up in.
+
+This is architecturally expected given the current design (one tenant,
+one shared capacity pool), not a defect to patch — a real fix would mean
+designing round-robin fairness BETWEEN a tenant's own concurrent batches,
+a meaningfully larger change than anything else in this phase, and not
+something to build speculatively without a concrete product decision
+that it's worth the complexity. What it DOES confirm: the user-facing
+complaint "can't handle 3+ concurrent logins" is real and reproducible —
+just caused by shared per-tenant capacity, not a queue/scheduler bug —
+and Phase 1.5's work already directly mitigates the SYMPTOM even though
+it doesn't eliminate the underlying wait: the stalled-batch UI (Phase
+1.5) shows session-2's slower batch making honest progress rather than
+looking stuck, and the event-driven wake-up (Phase 1.4) removes any
+EXTRA poll-tail delay on top of the real wait.
+
+**Recommendation**: no code change in this phase. If intra-tenant batch
+fairness becomes a real product priority, it needs its own scoped design
+(e.g., round-robin job ordering across a tenant's own concurrent
+batches) — flagged here for a future phase, not attempted speculatively.
+
 ---
 
 ## Issue 7 — Hanger/flat-lay shots: tilted hanger or line above it

@@ -100,11 +100,12 @@ export async function stopRealServer(handle: ServerHandle): Promise<void> {
   })
 }
 
-async function timedFetch(url: string, cookie?: string): Promise<number> {
+/** Exported for scripts/verify-issue6-concurrency.ts (Phase 1.6) — the same real-HTTP-latency measurement these scenarios already use. */
+export async function timedFetch(url: string, cookie?: string): Promise<{ ms: number; ok: boolean }> {
   const start = process.hrtime.bigint()
   const res = await fetch(url, cookie ? { headers: { cookie } } : undefined)
   await res.arrayBuffer() // drain the body — latency should include receiving it, not just headers
-  return Number(process.hrtime.bigint() - start) / 1e6
+  return { ms: Number(process.hrtime.bigint() - start) / 1e6, ok: res.ok }
 }
 
 async function readEventLoopP99(server: ServerHandle): Promise<number | null> {
@@ -152,7 +153,7 @@ export async function scenario5WebResponsiveness(
       const endpoint = endpoints[i % endpoints.length]
       const cookie = endpoint.includes('/api/health') ? undefined : tenantCookie
       for (let r = 0; r < requestsPerClient; r++) {
-        samples.push(await timedFetch(endpoint, cookie))
+        samples.push((await timedFetch(endpoint, cookie)).ms)
       }
     })
   )
