@@ -659,11 +659,33 @@ it should only fire on "nothing in the whole pool is happening", not a
 narrower per-kind imbalance, which is Phase 1.6's territory, not this
 one's.
 
-Part (2b) — worker recycling after N jobs/an RSS threshold, startup
-memory budget, the UI "stalled, no progress for N min" state with
+Part (2b) — worker recycling and the startup memory budget — done.
+`src/jobs/pool.ts`'s new `shouldRecycleWorker` (pure, unit-tested —
+6 new tests) recycles a worker after `JOB_WORKER_MAX_JOBS` jobs (default
+500) or once its RSS crosses `JOB_WORKER_MAX_RSS_MB` (default 1536MB,
+well over double a healthy ~700MB vision worker) — bounding exposure to
+a slow native-library leak (ONNX/sharp/skia state is resident for the
+whole process life) without needing to diagnose the leak itself. Runs
+after every `job:done`; the actual recycle reuses the same graceful-
+stop-then-force-kill-and-return-the-job path `stop()` already used for a
+full pool shutdown, now extracted into a shared `gracefulStopHandle`,
+and always respawns at `restarts=0` (a clean, intentional exit, not a
+crash, so it never counts against `MAX_RESTARTS`). `/proc` RSS reads
+were already written once for `npm run diag` (Phase 1.2) — extracted to
+`src/lib/process-rss.ts` and shared rather than duplicated.
+
+`checkMemoryBudget` (pure, 3 new tests) runs once at pool startup: logs
+a warning — never refuses to start, concurrency env vars are an
+explicit operator choice — when the configured vision/render/
+background_fill slot counts' ESTIMATED resident memory exceeds 80%
+(`JOB_STARTUP_MEMORY_BUDGET_FRACTION`) of the machine's total RAM, using
+the same rough per-kind estimates (~700MB vision, ~150MB render, ~80MB
+background_fill) as the recycling RSS ceiling.
+
+Still open: the UI "stalled, no progress for N min" state with
 Retry/Cancel, slow-request logging, and streaming upload/ZIP
 verification — plus Phase 1.6's concurrent-login verification and
-Phase 1.7's soak test — are not yet done.
+Phase 1.7's soak test.
 
 ---
 

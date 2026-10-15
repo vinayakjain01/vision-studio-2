@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isJobHung, isPoolStalled } from '@/jobs/pool'
+import { isJobHung, isPoolStalled, shouldRecycleWorker, checkMemoryBudget } from '@/jobs/pool'
 import type { JobKind } from '@/db/types'
 
 const MAX_RUNTIME: Record<JobKind, number> = { vision: 60_000, render: 90_000, background_fill: 240_000 }
@@ -84,5 +84,72 @@ describe('pool stall detection: isPoolStalled (pure decision logic)', () => {
     expect(
       isPoolStalled([{ state: 'stopped', kinds: ['vision'] }], { vision: 10 })
     ).toBe(false)
+  })
+})
+
+/**
+ * Phase 1.5 (docs/ISSUES.md issue 10): shouldRecycleWorker is the pure
+ * decision logic behind WorkerPool.maybeRecycle() — bounding exposure to a
+ * slow native-library leak in a long-lived worker process by job count or
+ * RSS, independent of whether any one job is itself hung.
+ */
+describe('worker recycling: shouldRecycleWorker (pure decision logic)', () => {
+  const LIMITS = { maxJobs: 500, maxRssMb: 1536 }
+
+  it('does not recycle a fresh, small worker', () => {
+    expect(shouldRecycleWorker(3, 700, LIMITS)).toBeNull()
+  })
+
+  it('recycles once the job-count limit is reached, regardless of RSS', () => {
+    const reason = shouldRecycleWorker(500, 100, LIMITS)
+    expect(reason).toContain('completed 500 jobs')
+  })
+
+  it('recycles once RSS exceeds the limit, even with very few jobs completed', () => {
+    const reason = shouldRecycleWorker(1, 2000, LIMITS)
+    expect(reason).toContain('RSS 2000MB')
+  })
+
+  it('job-count takes priority when BOTH limits are exceeded — the reason names the one that is unambiguous', () => {
+    const reason = shouldRecycleWorker(500, 2000, LIMITS)
+    expect(reason).toContain('completed 500 jobs')
+  })
+
+  it('a null RSS reading (non-Linux, or a failed /proc read) never triggers the RSS branch', () => {
+    expect(shouldRecycleWorker(10, null, LIMITS)).toBeNull()
+  })
+
+  it('is exactly at the boundary at the limit itself (>=, not >)', () => {
+    expect(shouldRecycleWorker(499, 100, LIMITS)).toBeNull()
+    expect(shouldRecycleWorker(500, 100, LIMITS)).not.toBeNull()
+  })
+})
+
+/**
+ * Phase 1.5: checkMemoryBudget is the pure decision logic behind
+ * WorkerPool.checkStartupMemoryBudget() — a one-time startup sanity check,
+ * not a measurement, so these tests exercise the arithmetic and threshold,
+ * not real memory.
+ */
+describe('startup memory budget: checkMemoryBudget (pure decision logic)', () => {
+  const PER_KIND_MB: Record<JobKind, number> = { vision: 700, render: 150, background_fill: 80 }
+
+  it('returns null when the estimate fits comfortably within budget', () => {
+    // 2 vision (1400) + 2 render (300) + 2 fill (160) = 1860MB on a 16GB box, 80% budget = 12,800MB.
+    expect(checkMemoryBudget({ vision: 2, render: 2, background_fill: 2 }, PER_KIND_MB, 16_000, 0.8)).toBeNull()
+  })
+
+  it('warns when the estimate exceeds the budget fraction of total RAM', () => {
+    // 8 vision workers alone = 5600MB on a 2GB box — wildly over any reasonable budget.
+    const warning = checkMemoryBudget({ vision: 8, render: 1, background_fill: 1 }, PER_KIND_MB, 2_000, 0.8)
+    expect(warning).toContain('exceeds')
+    expect(warning).toContain('80%')
+  })
+
+  it('is exactly at the boundary at the budget fraction itself (over, not at-or-under)', () => {
+    // vision=1 => 700MB estimate; total=1000MB, fraction=0.7 => budget=700MB exactly. At the boundary, not over.
+    expect(checkMemoryBudget({ vision: 1, render: 0, background_fill: 0 }, PER_KIND_MB, 1_000, 0.7)).toBeNull()
+    // One MB more total pushes the budget under the estimate.
+    expect(checkMemoryBudget({ vision: 1, render: 0, background_fill: 0 }, PER_KIND_MB, 999, 0.7)).not.toBeNull()
   })
 })

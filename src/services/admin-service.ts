@@ -40,6 +40,7 @@ import { generateTempPassword, hashPassword } from '@/auth/password'
 import { getQueueWaitPercentiles } from '@/jobs/queue-wait-rollup'
 import { getPool } from '@/jobs/pool'
 import { getEventLoopStats } from '@/lib/event-loop-monitor'
+import { readRssMb } from '@/lib/process-rss'
 import * as queue from '@/jobs/queue'
 
 // ─── Tenants table ──────────────────────────────────────────────────────────
@@ -277,16 +278,6 @@ export interface DiagReport {
   }
 }
 
-/** Linux-only (`/proc/<pid>/status`); returns null anywhere else or on any read failure — a missing number is never worth crashing the report over. */
-async function readRssMb(pid: number): Promise<number | null> {
-  try {
-    const text = await fs.readFile(`/proc/${pid}/status`, 'utf8')
-    const match = text.match(/^VmRSS:\s+(\d+)\s+kB$/m)
-    return match ? Math.round(Number(match[1]) / 1024) : null
-  } catch {
-    return null
-  }
-}
 
 /**
  * Everything `npm run diag` (scripts/diag.ts) needs that only the live

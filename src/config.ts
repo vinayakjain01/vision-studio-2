@@ -273,6 +273,32 @@ export const config = {
      * is idle" catches that. See WorkerPool.checkStall() in src/jobs/pool.ts.
      */
     stallThresholdMs: int(process.env.JOB_STALL_THRESHOLD_MS, 30_000),
+    /**
+     * Phase 1.5: worker recycling. A vision worker's ONNX sessions and a
+     * render worker's skia/sharp state stay resident in the SAME process for
+     * its entire life — a slow native-library leak across thousands of jobs
+     * would otherwise only ever be caught by the whole machine running low
+     * on memory, not by anything watching an individual job. Recycling
+     * periodically (job count) and reactively (an RSS ceiling) bounds that
+     * exposure without needing to diagnose the leak itself. See
+     * `WorkerPool`'s `maybeRecycle()` in src/jobs/pool.ts. A respawn after a
+     * CLEAN exit (this) is not a crash and does not count toward
+     * `MAX_RESTARTS`.
+     */
+    workerMaxJobs: int(process.env.JOB_WORKER_MAX_JOBS, 500),
+    /** ~700MB resident is a healthy vision worker per this file's "Sizing" doc comment (src/jobs/pool.ts) — well over double that is recycled as a leak guard, not a tight budget. */
+    workerMaxRssMb: int(process.env.JOB_WORKER_MAX_RSS_MB, 1536),
+    /**
+     * Phase 1.5: startup memory sanity check — logs a warning (never refuses
+     * to start; concurrency env vars are an explicit operator choice, see
+     * this section's own "runs." comment above) when the configured
+     * vision/render/background_fill slot counts' ESTIMATED resident memory
+     * exceeds this fraction of the machine's total RAM. A rough per-kind
+     * estimate (see `APPROX_WORKER_RSS_MB` in pool.ts), not a measurement —
+     * good enough to catch "someone set JOB_VISION_CONCURRENCY=8 on a 2GB
+     * box" without needing real workers running first.
+     */
+    startupMemoryBudgetFraction: Number(process.env.JOB_STARTUP_MEMORY_BUDGET_FRACTION ?? '0.8'),
   },
 
   aiExtendDispatcher: {

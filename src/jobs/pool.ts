@@ -50,6 +50,7 @@ import { tenants } from '@/db/control-repositories'
 import { sweepOrphanedMedia } from '@/services/cleanup-service'
 import { reconcileStorageUsage, sweepStaleTmpFiles } from '@/storage/media-store'
 import { backfillHourlyRollups, pruneHourlyRollups } from './queue-wait-rollup'
+import { readRssMb } from '@/lib/process-rss'
 import type { JobKind } from '@/db/types'
 import type { WorkerMessage } from './worker-entry'
 
@@ -77,6 +78,23 @@ interface WorkerHandle {
   state: 'starting' | 'idle' | 'busy' | 'stopped'
   restarts: number
   currentJob: CurrentJob | null
+  /** Phase 1.5: jobs completed since this PROCESS was spawned — reset to 0 on every recycle/respawn, unlike the pool-wide lifetime `completed` counter. */
+  jobsCompleted: number
+  /** Set once a recycle has been triggered for this handle, so a job it finishes while winding down can't trigger a second overlapping recycle. */
+  recycling: boolean
+}
+
+/**
+ * Phase 1.5: rough resident-memory cost per worker kind, for the startup
+ * memory sanity check only (`checkStartupMemoryBudget`) — not an exact
+ * accounting, and never measured against a real process here. Vision's
+ * number matches this file's own "Sizing" doc comment above
+ * (~165MB model weights + activations, call it 700MB resident).
+ */
+const APPROX_WORKER_RSS_MB: Record<JobKind, number> = {
+  vision: 700,
+  render: 150,
+  background_fill: 80,
 }
 
 /**
@@ -95,6 +113,52 @@ export function isJobHung(
   maxRuntimeMs: Record<JobKind, number>
 ): boolean {
   return now - job.startedAt > maxRuntimeMs[job.kind]
+}
+
+/**
+ * Phase 1.5's worker-recycling decision, pulled out pure for the same
+ * reason as `isJobHung` — see tests/jobs/pool-watchdog.test.ts.
+ * `rssMb` is `null` when `/proc` isn't available (non-Linux) or the read
+ * failed; a missing RSS reading never blocks the job-count check.
+ */
+export function shouldRecycleWorker(
+  jobsCompleted: number,
+  rssMb: number | null,
+  limits: { maxJobs: number; maxRssMb: number }
+): string | null {
+  if (jobsCompleted >= limits.maxJobs) {
+    return `completed ${jobsCompleted} jobs (limit ${limits.maxJobs})`
+  }
+  if (rssMb !== null && rssMb >= limits.maxRssMb) {
+    return `RSS ${rssMb}MB exceeds limit ${limits.maxRssMb}MB`
+  }
+  return null
+}
+
+/**
+ * Phase 1.5's startup memory sanity check, pulled out pure for the same
+ * reason as `isJobHung` — see tests/jobs/pool-watchdog.test.ts. Returns the
+ * warning message to log, or null when the estimate is within budget.
+ */
+export function checkMemoryBudget(
+  slots: { vision: number; render: number; background_fill: number },
+  perKindMb: Record<JobKind, number>,
+  totalMb: number,
+  budgetFraction: number
+): string | null {
+  const estimatedMb =
+    slots.vision * perKindMb.vision + slots.render * perKindMb.render + slots.background_fill * perKindMb.background_fill
+  const budgetMb = totalMb * budgetFraction
+  if (estimatedMb <= budgetMb) return null
+
+  return (
+    `estimated worker RSS ~${Math.round(estimatedMb)}MB ` +
+    `(vision=${slots.vision}x${perKindMb.vision}MB render=${slots.render}x${perKindMb.render}MB ` +
+    `background_fill=${slots.background_fill}x${perKindMb.background_fill}MB) exceeds ` +
+    `${(budgetFraction * 100).toFixed(0)}% of this machine's ${Math.round(totalMb)}MB total RAM — ` +
+    `concurrency may be sized too high for this box (see JOB_VISION_CONCURRENCY/` +
+    `JOB_RENDER_CONCURRENCY/VISION_ORT_THREADS in config.ts's own sizing guidance).`
+  )
 }
 
 /**
@@ -166,6 +230,8 @@ class WorkerPool {
     const visionSlots = config.jobs.visionConcurrency
     const renderSlots = config.jobs.renderConcurrency
     const backgroundFillSlots = config.cloudinary.jobConcurrency
+
+    this.checkStartupMemoryBudget(visionSlots, renderSlots, backgroundFillSlots)
 
     const plan: { id: string; kinds: JobKind[] }[] = []
     for (let i = 0; i < visionSlots; i++) {
@@ -452,7 +518,16 @@ class WorkerPool {
       }
     }
 
-    const handle: WorkerHandle = { id, kinds, child, state: 'starting', restarts, currentJob: null }
+    const handle: WorkerHandle = {
+      id,
+      kinds,
+      child,
+      state: 'starting',
+      restarts,
+      currentJob: null,
+      jobsCompleted: 0,
+      recycling: false,
+    }
 
     child.on('message', (message: WorkerMessage) => {
       switch (message.type) {
@@ -473,9 +548,11 @@ class WorkerPool {
         case 'job:done':
           handle.state = 'busy'
           handle.currentJob = null
+          handle.jobsCompleted++
           this.completed++
           if (message.batchId) this.refreshBatch(message.tenantId, message.batchId)
           if (message.kind === 'background_fill') this.wakeWaitingRenders(message)
+          void this.maybeRecycle(handle)
           break
         case 'job:failed':
           handle.state = 'busy'
@@ -622,30 +699,95 @@ class WorkerPool {
       }
     }
 
-    await Promise.all(
-      this.handles.map(
-        handle =>
-          new Promise<void>(resolve => {
-            if (handle.state === 'stopped') return resolve()
-            const timer = setTimeout(() => {
-              // Still holding a job past the grace period — give it back
-              // untouched rather than let it ride out to a lease-expiry
-              // reclaim (which would count an attempt against it).
-              if (handle.currentJob) {
-                queue.returnToPending(handle.currentJob.jobId, handle.id)
-              }
-              handle.child.kill('SIGKILL')
-              resolve()
-            }, config.jobs.shutdownGraceMs)
-            handle.child.once('exit', () => {
-              clearTimeout(timer)
-              resolve()
-            })
-          })
-      )
-    )
-
+    await Promise.all(this.handles.map(handle => this.gracefulStopHandle(handle)))
     this.handles = []
+  }
+
+  /**
+   * Wait up to `shutdownGraceMs` for ONE worker to exit on its own after a
+   * `{type:'stop'}` has already been sent to it — shared by `stop()` (every
+   * handle, pool-wide shutdown) and `maybeRecycle()` (one handle, the
+   * process stays up). Same grace-then-force-kill-and-return-the-job
+   * reasoning either way: the worker already stopped claiming new work the
+   * instant it saw 'stop' (see `stop()`'s own doc comment); this is purely
+   * about whatever it was already holding when that arrived.
+   */
+  private gracefulStopHandle(handle: WorkerHandle): Promise<void> {
+    return new Promise<void>(resolve => {
+      if (handle.state === 'stopped') return resolve()
+      const timer = setTimeout(() => {
+        // Still holding a job past the grace period — give it back
+        // untouched rather than let it ride out to a lease-expiry
+        // reclaim (which would count an attempt against it).
+        if (handle.currentJob) {
+          queue.returnToPending(handle.currentJob.jobId, handle.id)
+        }
+        handle.child.kill('SIGKILL')
+        resolve()
+      }, config.jobs.shutdownGraceMs)
+      handle.child.once('exit', () => {
+        clearTimeout(timer)
+        resolve()
+      })
+    })
+  }
+
+  /**
+   * Phase 1.5 (docs/ISSUES.md issue 10): recycle a worker whose own process
+   * has processed too many jobs or grown too large — an ONNX session or a
+   * native image library's internal state stays resident for the process's
+   * whole life, so a slow leak only ever shows up here, not inside any one
+   * job. Runs after EVERY job completion (see the `job:done` handler) — an
+   * in-memory `/proc` read each time, not real disk I/O, same cost already
+   * paid per-worker on every `npm run diag` call in admin-service.ts.
+   *
+   * Reuses `gracefulStopHandle` — the worker may have already started
+   * claiming its NEXT job by the time this runs (the 'stop' message and
+   * this check both race against its independent poll loop), so recycling
+   * goes through the exact same grace-period-then-force-kill-and-return-the-
+   * job path a pool-wide shutdown does, never an abrupt kill of live work.
+   */
+  private async maybeRecycle(handle: WorkerHandle): Promise<void> {
+    if (handle.recycling || !this.started) return
+
+    const rssMb = handle.child.pid ? await readRssMb(handle.child.pid) : null
+    const reason = shouldRecycleWorker(handle.jobsCompleted, rssMb, {
+      maxJobs: config.jobs.workerMaxJobs,
+      maxRssMb: config.jobs.workerMaxRssMb,
+    })
+    if (!reason) return
+
+    handle.recycling = true
+    console.log(`[pool] recycling worker ${handle.id}: ${reason}`)
+    try {
+      handle.child.send({ type: 'stop' })
+    } catch {
+      // Channel already closed — it's already on its way out.
+    }
+    await this.gracefulStopHandle(handle)
+    this.handles = this.handles.filter(h => h !== handle)
+    // A clean, intentional recycle — not a crash — so this always respawns
+    // at restarts=0 regardless of how many times this SLOT has crashed
+    // before, and never counts against MAX_RESTARTS.
+    if (this.started) this.spawn(handle.id, handle.kinds, 0)
+  }
+
+  /**
+   * Phase 1.5: a one-time, startup-only sanity check — logs a warning (never
+   * refuses to start) when the configured slot counts' ESTIMATED resident
+   * memory exceeds `config.jobs.startupMemoryBudgetFraction` of this
+   * machine's total RAM. See `APPROX_WORKER_RSS_MB`'s own doc comment for
+   * why these numbers are rough estimates, not measurements.
+   */
+  private checkStartupMemoryBudget(visionSlots: number, renderSlots: number, backgroundFillSlots: number): void {
+    const totalMb = os.totalmem() / 1024 / 1024
+    const warning = checkMemoryBudget(
+      { vision: visionSlots, render: renderSlots, background_fill: backgroundFillSlots },
+      APPROX_WORKER_RSS_MB,
+      totalMb,
+      config.jobs.startupMemoryBudgetFraction
+    )
+    if (warning) console.warn(`[pool] startup memory budget: ${warning}`)
   }
 }
 
