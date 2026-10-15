@@ -682,10 +682,24 @@ background_fill slot counts' ESTIMATED resident memory exceeds 80%
 the same rough per-kind estimates (~700MB vision, ~150MB render, ~80MB
 background_fill) as the recycling RSS ceiling.
 
+Slow-request logging — done. `src/lib/api-handler.ts`'s new
+`callAndLogIfSlow` times the actual route handler call (not request
+parsing or auth resolution) in both `handler()` and `adminHandler()` —
+every API route funnels through one of the two, so this is one change
+site, not per-route instrumentation. A call exceeding
+`API_SLOW_REQUEST_MS` (default 2000ms, new `observability` config key)
+logs a `[slow-request] method=... path=... status=... ms=... tenantId=...`
+line, matching the existing `[stage]`/`[pool]` bracket-tag convention —
+and still logs (with `status=error`) when the handler throws, rather
+than only covering the success path. 5 new tests in
+`tests/lib/api-handler.test.ts` (there was no test file for this module
+before) cover the threshold boundary, the thrown-error path, and that
+`tenantId` is omitted for public/unauthenticated routes rather than
+printed as `undefined`.
+
 Still open: the UI "stalled, no progress for N min" state with
-Retry/Cancel, slow-request logging, and streaming upload/ZIP
-verification — plus Phase 1.6's concurrent-login verification and
-Phase 1.7's soak test.
+Retry/Cancel, and streaming upload/ZIP verification — plus Phase 1.6's
+concurrent-login verification and Phase 1.7's soak test.
 
 ---
 

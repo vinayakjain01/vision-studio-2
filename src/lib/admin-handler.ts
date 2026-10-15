@@ -25,7 +25,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { config } from '@/config'
 import { resolveSession, type ResolvedSession } from '@/auth/session'
-import { MUTATING_METHODS, originIsTrusted, mapKnownError, unauthorized, notFound } from './api-handler'
+import { MUTATING_METHODS, originIsTrusted, mapKnownError, unauthorized, notFound, callAndLogIfSlow } from './api-handler'
 
 export function adminHandler<Args extends unknown[]>(
   fn: (session: ResolvedSession, ...args: Args) => Promise<NextResponse> | NextResponse
@@ -43,7 +43,7 @@ export function adminHandler<Args extends unknown[]>(
       if (!resolved) return unauthorized()
       if (!resolved.isPlatformAdmin) return notFound()
 
-      return await fn(resolved, ...args)
+      return await callAndLogIfSlow(request, undefined, () => fn(resolved, ...args))
     } catch (err) {
       return mapKnownError(err)
     }

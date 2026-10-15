@@ -120,6 +120,37 @@ function safeHost(url: string): string | null {
 }
 
 /**
+ * Phase 1.5 (docs/ISSUES.md issue 10): times the actual route handler call
+ * (not request parsing or auth resolution) and logs a `[slow-request]` line
+ * when it exceeds `config.observability.slowRequestThresholdMs` — a slow
+ * request looking like "the tool hangs" to a user is exactly the kind of
+ * failure mode this issue describes, and nothing previously logged how long
+ * a request actually took. Shared by `handler()` and `adminHandler()` so
+ * both wrappers' routes get the same line in the same format.
+ */
+export async function callAndLogIfSlow(
+  request: NextRequest | undefined,
+  tenantId: string | undefined,
+  fn: () => Promise<NextResponse> | NextResponse
+): Promise<NextResponse> {
+  const startedAt = performance.now()
+  let status: number | 'error' = 'error'
+  try {
+    const response = await fn()
+    status = response.status
+    return response
+  } finally {
+    const durationMs = performance.now() - startedAt
+    if (durationMs >= config.observability.slowRequestThresholdMs) {
+      console.warn(
+        `[slow-request] method=${request?.method ?? 'UNKNOWN'} path=${request?.nextUrl.pathname ?? 'unknown'} ` +
+          `status=${status} ms=${Math.round(durationMs)}${tenantId ? ` tenantId=${tenantId}` : ''}`
+      )
+    }
+  }
+}
+
+/**
  * Wrap a route handler so any throw becomes a logged 500, AND — unless
  * `{ public: true }` — so the request has a valid session and tenant before
  * the handler body runs at all.
@@ -151,15 +182,16 @@ export function handler<Args extends unknown[]>(
       }
 
       if (options?.public) {
-        return await fn(...args)
+        return await callAndLogIfSlow(request, undefined, () => fn(...args))
       }
 
       const token = request?.cookies.get(config.auth.sessionCookieName)?.value
       const resolved = resolveSession(token)
       if (!resolved) return unauthorized()
-      if (!resolved.tenant) return unauthorized('this account has no workspace')
+      const tenant = resolved.tenant
+      if (!tenant) return unauthorized('this account has no workspace')
 
-      return await runWithTenant(resolved.tenant, () => fn(...args))
+      return await callAndLogIfSlow(request, tenant.tenantId, () => runWithTenant(tenant, () => fn(...args)))
     } catch (err) {
       return mapKnownError(err)
     }

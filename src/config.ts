@@ -398,6 +398,16 @@ export const config = {
   observability: {
     /** How often the event-loop delay monitor logs and resets its window — see src/lib/event-loop-monitor.ts. */
     eventLoopLogIntervalMs: int(process.env.EVENT_LOOP_LOG_INTERVAL_MS, 60_000),
+    /**
+     * Phase 1.5 (docs/ISSUES.md issue 10): a request handled by `handler()`/
+     * `adminHandler()` (src/lib/api-handler.ts, src/lib/admin-handler.ts —
+     * every API route funnels through one of the two) that takes longer than
+     * this is logged — a `[slow-request]` line the same operator who greps
+     * `[stage]`/`[pool]` lines can already find, not a new metrics system.
+     * Timed around the actual route handler call only, not request parsing
+     * or auth resolution, so this reflects the route's own work.
+     */
+    slowRequestThresholdMs: int(process.env.API_SLOW_REQUEST_MS, 2000),
   },
 
   auth: {
