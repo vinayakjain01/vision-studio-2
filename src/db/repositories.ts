@@ -451,6 +451,25 @@ export const images = {
       .all(importId) as any[]
   },
 
+  /**
+   * Every image id under a product — captured before a cascade delete, same
+   * reasoning as `hashesForProduct`, so `cleanup-service.ts` can cancel any
+   * queued vision/render/background_fill job for these images before they
+   * (and the product row) are gone (see `queue.deleteJobsForImages`).
+   */
+  idsForProduct(productId: string): string[] {
+    return (getDb().prepare('SELECT id FROM images WHERE product_id = ?').all(productId) as { id: string }[]).map(
+      r => r.id
+    )
+  },
+
+  /** Every image id under an import — see `idsForProduct`'s doc comment. */
+  idsForImport(importId: string): string[] {
+    return (getDb().prepare('SELECT id FROM images WHERE import_id = ?').all(importId) as { id: string }[]).map(
+      r => r.id
+    )
+  },
+
   /** Every image row. Used by the orphan sweep to build its reference set. */
   listByStatusAll(): ImageRecord[] {
     return getDb().prepare('SELECT * FROM images').all().map(toImage)

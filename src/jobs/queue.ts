@@ -555,6 +555,47 @@ export function deleteJobsForBatch(tenantId: string, batchId: string): number {
 }
 
 /**
+ * Phase 1.5 (docs/ISSUES.md issue 10's bonus finding): permanently delete
+ * every job row — of any kind, any status — whose payload names one of
+ * these image ids. `jobs` has no `image_id` column (only `batch_id` does —
+ * see `deleteJobsForBatch`), so this is a per-tenant scan with the match
+ * done in application code, same reasoning as `wakeRenderJobsWaitingOn`.
+ * Deleting a product/import never called this, which is why 25 vision/
+ * render jobs failed with ENOENT against tenant "Noman"'s already-deleted
+ * images — the images were gone but their jobs were not. MUST be called
+ * BEFORE the product/import row's cascade delete removes the image rows,
+ * same ordering reasoning as `deleteJobsForBatch`.
+ */
+export function deleteJobsForImages(tenantId: string, imageIds: string[]): number {
+  if (imageIds.length === 0) return 0
+  const idSet = new Set(imageIds)
+
+  return controlTx(db => {
+    const rows = db
+      .prepare(`SELECT id, status, payload FROM jobs WHERE tenant_id = ?`)
+      .all(tenantId) as { id: string; status: JobStatus; payload: string }[]
+
+    let activeCount = 0
+    let deleted = 0
+    for (const row of rows) {
+      const payload = parseJson<{ imageId?: string }>(row.payload, {})
+      if (!payload.imageId || !idSet.has(payload.imageId)) continue
+      if (row.status === 'claimed' || row.status === 'running') activeCount++
+      db.prepare(`DELETE FROM jobs WHERE id = ?`).run(row.id)
+      deleted++
+    }
+
+    if (activeCount > 0) {
+      db.prepare(
+        'UPDATE tenant_queue_state SET running_jobs = MAX(0, running_jobs - ?) WHERE tenant_id = ?'
+      ).run(activeCount, tenantId)
+    }
+
+    return deleted
+  })
+}
+
+/**
  * Ops escape hatch: cancel EVERY not-yet-finished job — including 'running'
  * ones, unlike `cancelBatch` (which deliberately leaves 'running' jobs alone
  * to finish normally). For when the queue is genuinely stuck (a crashed or

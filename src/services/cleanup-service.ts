@@ -149,6 +149,12 @@ export async function deleteImport(importId: string): Promise<DeleteResult | nul
   const creativeKeys = creatives.keysForImport(importId)
   const productCount = products.count({ importId })
 
+  // Cancel any queued/running vision, render or background_fill job for
+  // these images BEFORE the cascade removes them — see
+  // `queue.deleteJobsForImages`'s doc comment for why skipping this orphans
+  // jobs that later fail with ENOENT against a product/image that's gone.
+  queue.deleteJobsForImages(currentTenant().tenantId, images.idsForImport(importId))
+
   imports.remove(importId) // cascades products → images → creatives
 
   const media = await purgeUnreferenced(hashes)
@@ -172,6 +178,9 @@ export async function deleteProduct(productId: string): Promise<DeleteResult | n
 
   const hashes = images.hashesForProduct(productId)
   const creativeKeys = creatives.keysForProduct(productId)
+
+  // See deleteImport's identical comment — same orphaned-job bug, same fix.
+  queue.deleteJobsForImages(currentTenant().tenantId, images.idsForProduct(productId))
 
   products.remove(productId) // cascades images → creatives
 

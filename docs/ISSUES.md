@@ -614,14 +614,29 @@ orphaned failures; a stalled pool (simulated) self-heals within N seconds
 and logs the event; the soak test (3 users × 100 images × 30 min) ends with
 zero stuck jobs and counters back to zero.
 
----
+### Phase 1.5 — orphaned-jobs-on-delete: fixed
 
-## Bonus finding — orphaned jobs after product delete
+Part (1) of the fix plan above is done. `src/jobs/queue.ts`'s new
+`deleteJobsForImages(tenantId, imageIds)` permanently deletes every job
+row (any kind, any status) whose payload names one of the given image
+ids, called from both `deleteProduct` and `deleteImport`
+(`src/services/cleanup-service.ts`) before the cascade removes the image
+rows — `deleteImport` had the identical bug (it cascades through every
+product in the import) and is fixed the same way. Image ids are matched
+in application code rather than a new `json_extract` SQL query, same
+reasoning as Phase 1.4's `wakeRenderJobsWaitingOn`.
 
-Covered under Issue 10 above; listed separately here because it's not one
-of the 10 reported issues but was found directly in production evidence
-during this triage and is a genuine, scoped, low-risk fix independent of
-everything else in this document.
+There was no existing test file for `cleanup-service.ts` at all — this
+is new coverage, not just a regression check: `tests/services/cleanup-
+service.test.ts` (5 tests) covers a pending vision job being deleted
+with its product, a claimed render job being deleted with its
+`running_jobs` counter correctly decremented, a sibling product's jobs
+being left untouched, `deleteImport` cancelling jobs across every image
+under it, and tenant scoping (an adversarial same-imageId-different-
+tenant case).
+
+Part (2) — stalled-pool self-heal, worker recycling, the UI "stalled"
+state, and the soak test — is not yet done.
 
 ---
 
