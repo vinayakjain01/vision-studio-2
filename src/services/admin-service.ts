@@ -266,6 +266,8 @@ export interface DiagReport {
   /** Jobs sitting at attempts >= maxAttempts - 1 but still pending/claimed/running — one defer/retry away from parking, worth a human glance even before they fail outright. */
   deferralLoopCandidates: DiagStalledCandidate[]
   workers: DiagWorkerStat[]
+  /** Phase 1.5: how many times the pool has self-healed from a detected stall since it last started — see WorkerPool.checkStall(). */
+  stallRestartCount: number
   queueDepthTotal: number
   eventLoopP99Ms: number | null
   memory: {
@@ -363,6 +365,7 @@ export async function getDiagnostics(): Promise<DiagReport> {
     oldestClaimedOrRunning,
     deferralLoopCandidates,
     workers,
+    stallRestartCount: poolStatus.stallRestartCount,
     queueDepthTotal: globalQueue.pending + globalQueue.claimed + globalQueue.running,
     eventLoopP99Ms: eventLoop?.p99Ms ?? null,
     memory: {

@@ -76,7 +76,8 @@ async function main() {
     console.log(`  ${w.id.padEnd(12)} ${w.state.padEnd(8)} pid=${w.pid ?? '-'} rss=${w.rssMb != null ? w.rssMb + 'MB' : 'unknown'} kinds=${w.kinds.join(',')}`)
   }
 
-  console.log(`\nQueue depth total: ${diag.queueDepthTotal}`)
+  console.log(`\nPool stall self-heals since last start: ${diag.stallRestartCount}`)
+  console.log(`Queue depth total: ${diag.queueDepthTotal}`)
   console.log(`Event-loop p99: ${diag.eventLoopP99Ms != null ? diag.eventLoopP99Ms + 'ms' : 'unavailable'}`)
   console.log(`Memory: ${diag.memory.rssMb}MB RSS${diag.memory.limitMb != null ? ` / ${diag.memory.limitMb}MB limit (${((diag.memory.rssMb / diag.memory.limitMb) * 100).toFixed(0)}%)` : ' (no container limit detected)'}`)
 }

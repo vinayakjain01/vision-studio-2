@@ -59,6 +59,8 @@ export interface PoolStatus {
   completed: number
   failed: number
   startedAt: string | null
+  /** Phase 1.5: how many times `checkStall()` has self-healed the pool since it last started — see `isPoolStalled`. */
+  stallRestartCount: number
 }
 
 export interface CurrentJob {
@@ -95,6 +97,29 @@ export function isJobHung(
   return now - job.startedAt > maxRuntimeMs[job.kind]
 }
 
+/**
+ * Phase 1.5's pool-level stall check, pulled out pure for the same reason
+ * `isJobHung` is: directly unit-testable against synthetic worker/queue
+ * state, no process spawning required — see tests/jobs/pool-watchdog.test.ts.
+ *
+ * True exactly when every worker capable of serving a kind with pending
+ * work is currently 'idle' — i.e. nothing is even attempting that work,
+ * not merely "the one thing it's doing is slow" (the per-job watchdog's
+ * job). A worker that is 'busy' or still 'starting' means something IS
+ * happening, so that alone rules out a stall regardless of queue depth.
+ */
+export function isPoolStalled(
+  workers: { state: 'starting' | 'idle' | 'busy' | 'stopped'; kinds: JobKind[] }[],
+  pendingByKind: Partial<Record<JobKind, number>>
+): boolean {
+  if (workers.some(w => w.state === 'busy' || w.state === 'starting')) return false
+  const idleKinds = new Set(workers.filter(w => w.state === 'idle').flatMap(w => w.kinds))
+  for (const kind of idleKinds) {
+    if ((pendingByKind[kind] ?? 0) > 0) return true
+  }
+  return false
+}
+
 /** A worker that crashes this many times is not respawned again. */
 const MAX_RESTARTS = 5
 
@@ -110,6 +135,10 @@ class WorkerPool {
   private sweeper: NodeJS.Timeout | null = null
   private watchdog: NodeJS.Timeout | null = null
   private maintenanceSweeper: NodeJS.Timeout | null = null
+  /** When the pool first became stalled (see `isPoolStalled`), or null while it isn't. */
+  private stalledSince: number | null = null
+  /** How many times `checkStall()` has restarted the pool — surfaced via `status()` for `npm run diag`. */
+  private stallRestartCount = 0
 
   isRunning(): boolean {
     return this.started
@@ -119,6 +148,11 @@ class WorkerPool {
     if (this.started) return
     this.started = true
     this.startedAt = new Date().toISOString()
+    // Transient "how long has THIS stall lasted" state — stale across a
+    // restart would risk firing again almost immediately on a freshly
+    // started pool. stallRestartCount is NOT reset: it's a lifetime counter
+    // for operators (see status()), not per-run state.
+    this.stalledSince = null
 
     // A previous run may have died mid-job. Return anything abandoned to the
     // queue before workers start competing for it. Global — every tenant's
@@ -175,7 +209,10 @@ class WorkerPool {
     }, 60_000)
     this.sweeper.unref?.()
 
-    this.watchdog = setInterval(() => this.checkWatchdog(), WATCHDOG_INTERVAL_MS)
+    this.watchdog = setInterval(() => {
+      this.checkWatchdog()
+      this.checkStall()
+    }, WATCHDOG_INTERVAL_MS)
     this.watchdog.unref?.()
 
     // Slower sweep: job retention pruning (control.db only, no tenant
@@ -280,6 +317,56 @@ class WorkerPool {
       // this slot the same way a native crash would.
       handle.child.kill('SIGKILL')
     }
+  }
+
+  /**
+   * Phase 1.5 (docs/ISSUES.md issue 10): pool-level stall self-heal. Runs on
+   * the same tick as `checkWatchdog()` — see `isPoolStalled`'s doc comment
+   * for why "every worker reports idle" is not, on its own, proof the queue
+   * is actually empty. `queue.stats(kind)` is a cheap global count (no
+   * tenantId), not per-tenant, matching `isPoolStalled`'s "is ANY work
+   * available for a kind this pool can serve" question.
+   */
+  private checkStall(): void {
+    if (this.handles.length === 0) return
+
+    const kinds = new Set(this.handles.flatMap(h => h.kinds))
+    const pendingByKind: Partial<Record<JobKind, number>> = {}
+    for (const kind of kinds) pendingByKind[kind] = queue.stats(kind).pending
+
+    const stalled = isPoolStalled(
+      this.handles.map(h => ({ state: h.state, kinds: h.kinds })),
+      pendingByKind
+    )
+
+    if (!stalled) {
+      this.stalledSince = null
+      return
+    }
+
+    const now = Date.now()
+    if (this.stalledSince === null) {
+      this.stalledSince = now
+      return
+    }
+
+    const stalledForMs = now - this.stalledSince
+    if (stalledForMs >= config.jobs.stallThresholdMs) {
+      this.stallRestartCount++
+      console.error(
+        `[pool] STALL DETECTED: pending work available but every capable worker has been idle for ` +
+          `${stalledForMs}ms (threshold ${config.jobs.stallThresholdMs}ms) — restarting the pool to self-heal ` +
+          `(restart #${this.stallRestartCount})`
+      )
+      this.stalledSince = null
+      void this.restartForStall()
+    }
+  }
+
+  /** Full stop + start — reclaimStale()/reconcileRunningJobs() run as part of start(), same as a real process restart would do. */
+  private async restartForStall(): Promise<void> {
+    await this.stop()
+    this.start()
   }
 
   private async spawnStaggered(plan: { id: string; kinds: JobKind[] }[]): Promise<void> {
@@ -495,6 +582,7 @@ class WorkerPool {
       completed: this.completed,
       failed: this.failed,
       startedAt: this.startedAt,
+      stallRestartCount: this.stallRestartCount,
     }
   }
 

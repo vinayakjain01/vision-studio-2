@@ -635,8 +635,35 @@ being left untouched, `deleteImport` cancelling jobs across every image
 under it, and tenant scoping (an adversarial same-imageId-different-
 tenant case).
 
-Part (2) — stalled-pool self-heal, worker recycling, the UI "stalled"
-state, and the soak test — is not yet done.
+Part (2a) — stalled-pool self-heal — is now done too. `src/jobs/pool.ts`'s
+new `isPoolStalled` (pure, unit-tested in `tests/jobs/pool-watchdog.test.ts`,
+7 new tests) answers "is there pending work for a kind where every capable
+worker is currently idle" — distinct from the existing per-job watchdog,
+which only ever sees one job stuck inside a native call and has no way to
+notice the pool as a whole silently failing to claim anything at all
+(every worker correctly reports 'idle' whether the queue is genuinely
+empty or `claim()` itself is broken — see the function's own doc comment).
+`WorkerPool.checkStall()` runs on the existing 10s watchdog tick; once the
+stalled condition holds continuously for `JOB_STALL_THRESHOLD_MS`
+(default 30s, new config key), it logs a `STALL DETECTED` line and does a
+full `stop()` + `start()` — the same restart path `scripts/loadtest-
+multitenant.ts`'s chaos scenario already exercises — then counts the
+restart in a new `stallRestartCount`, surfaced through `PoolStatus`,
+`getDiagnostics()`, and `npm run diag`'s output so an operator can see
+"this box has self-healed N times" without grepping logs. Deliberately
+conservative: a busy or still-starting worker ANYWHERE in the pool
+suppresses the whole check, even for an unrelated kind — restarting the
+entire pool is disruptive enough (every in-flight job rides out the
+normal graceful-shutdown grace period or gets returned to pending) that
+it should only fire on "nothing in the whole pool is happening", not a
+narrower per-kind imbalance, which is Phase 1.6's territory, not this
+one's.
+
+Part (2b) — worker recycling after N jobs/an RSS threshold, startup
+memory budget, the UI "stalled, no progress for N min" state with
+Retry/Cancel, slow-request logging, and streaming upload/ZIP
+verification — plus Phase 1.6's concurrent-login verification and
+Phase 1.7's soak test — are not yet done.
 
 ---
 

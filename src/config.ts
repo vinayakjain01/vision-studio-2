@@ -257,6 +257,22 @@ export const config = {
         int(process.env.CLOUDINARY_TIMEOUT_MS, 180_000) + 60_000
       ),
     } as Record<'vision' | 'render' | 'background_fill', number>,
+    /**
+     * Phase 1.5 (docs/ISSUES.md issue 10): pool-level stall detection —
+     * distinct from the per-job watchdog above, which only catches ONE job
+     * stuck inside a native call. This catches the pool as a whole silently
+     * failing to make progress at all: pending work exists for a kind, every
+     * worker capable of that kind is sitting 'idle' (not busy, not
+     * starting), and that's been true continuously for this long. Every
+     * worker reporting idle is itself NOT an error — `loop()` posts 'idle'
+     * whenever `claim()` returns nothing OR silently swallows an error (see
+     * worker-entry.ts's per-kind try/catch) — so a bug in claim()/the
+     * scheduler that always throws or always returns null looks identical
+     * to "queue genuinely empty" from any single worker's own state. Only
+     * cross-referencing "pending work exists" against "every capable worker
+     * is idle" catches that. See WorkerPool.checkStall() in src/jobs/pool.ts.
+     */
+    stallThresholdMs: int(process.env.JOB_STALL_THRESHOLD_MS, 30_000),
   },
 
   aiExtendDispatcher: {
