@@ -842,6 +842,81 @@ test running on this machine can settle on its own.
 
 ---
 
+## Issue 11 — Mannequin image not resizing properly (reported after Phase 1)
+
+**Status: Strong hypothesis, not yet fixture-confirmed** — reported via
+the same tracker on 2026-10-19, after the original 10 issues. A
+headless dress-form mannequin wearing a saree, shot outdoors under
+dappled sunlight; no "after" image was captured, only the original —
+consistent with a visibly wrong result rather than a crash.
+
+**This is very likely NOT a new root cause** — it's issues 1 and 7's
+already-documented gaps manifesting on a different kind of photo, which
+raises their priority rather than adding new scope:
+
+1. **Shot classification itself is not the problem.** `src/vision/
+   analysis/shot-type.ts` already has a deliberate `flat_lay`/
+   `product_only` fallback for "no person detected" (line ~155 literally
+   names "a garment laid flat or on a ghost mannequin") and for "a body
+   is in frame but no face or hair was detected" (~251-257). A mannequin
+   correctly lands on one of these regardless of which way YOLOv8-pose's
+   detection goes.
+
+2. **The real gap: `enforceKeepInside` (`src/framing/solver.ts:381-456`)
+   forces anchors into frame with no confidence floor.** Unlike
+   `selectStrategy`'s own `hasAnchor` check (`solver.ts:248-251`),
+   `enforceKeepInside`'s anchor filter (`solver.ts:393-399`) only checks
+   `entry.anchor != null` — it reads `constraints.keepInside` from the
+   TEMPLATE (`head_top`, `feet`, `knee_center` on the default preset,
+   `src/framing/types.ts:282`), not from whichever strategy actually won.
+   So even when a mannequin correctly falls through to the anchor-free
+   `subject_fit` fallback, two low-confidence synthesized anchors can
+   still get forced into frame and distort it:
+   - `estimateHead`'s fallback #3 (`src/vision/analysis/anchors.ts:
+     253-270`) synthesizes a `head_top` from the person box's top edge
+     whenever ANY person-shaped region is detected at all — independent
+     of whether a head was actually seen. This is the exact same
+     mechanism Issue 1 already documents for half-face photos; here a
+     mannequin's torso would be what triggers it instead of a person.
+   - `feet`'s mask-derived fallback (`anchors.ts:485-495`) can anchor to
+     a dress form's STAND/POLE rather than the garment hem, if matting
+     absorbs it under dappled outdoor light.
+   
+   Confirmed NOT silently rejected: `src/services/generation-service.ts:
+   200-216` renders a shot-type mismatch anyway (with a UI note), so
+   this produces a visibly wrong render, not a skipped one.
+
+3. **AI Extend's boundary vocabulary (Issue 7's documented gap)** — only
+   `garment`/`skin`/`background` exist (`src/render/boundary-classify.ts:
+   37`) — would classify a mannequin's stand as generic `background`,
+   same seam mechanism Issue 7 already documents for a hanger.
+
+**Fix plan** (extends Issue 1's and Issue 7's already-planned Phase 3
+work, not new scope): (1) filter `enforceKeepInside`'s anchors by the
+same confidence/trustworthiness check Issue 1's fix already calls for,
+so a phantom `head_top` or stand-inflated `feet` can't override a
+correctly-chosen anchor-free strategy; (2) extend that trustworthiness
+flag to the person-box head fallback and mask-derived feet fallback
+generally, not just the half-face case; (3) extend Issue 7's shot-type
+gating to the boundary-classify vocabulary gap for `product_only` shots.
+
+**Why this isn't being fixed blind right now**: `enforceKeepInside` and
+`estimateHead`/`feet` anchor estimation are used by every template on
+the default framing preset — changing their confidence handling without
+a real photo to render before/after would be exactly the kind of
+unverified change this program's own rules exist to prevent (Phase 3 is
+already gated on `LOCAL_ISSUE_DIR` for this reason). This entry is
+evidence strengthening Issue 1/7's priority, not a green light to patch
+`solver.ts` against a thumbnail.
+
+**Acceptance test** (once a real fixture is available): the mannequin
+photo renders with the garment's actual hem as the bottom anchor (not a
+stand/pole), no synthesized `head_top` forcing an unwanted zoom-out, and
+a clean (non-visible-seam) AI-Extended background around the mannequin's
+base.
+
+---
+
 ## Phase 4 feature scope note
 
 **Correction to the original framing of this feature**: per-strategy
