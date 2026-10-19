@@ -932,12 +932,11 @@ instructed; not investigated further in Phase 0 beyond confirming this.
 
 ---
 
-## Open items before Phase 1 can fully proceed
+## Open items before Phase 2/3 can fully proceed
 
 1. **`LOCAL_ISSUE_DIR`** — needed for real fixture-based reproduction and
-   before/after evidence on issues 1, 2, 3, 7 specifically (pixel-level
-   comparisons). The pasted chat images are supporting qualitative
-   evidence only, not suitable as deterministic test fixtures.
+   before/after evidence on issues 1, 2, 3, 7, 11 specifically
+   (pixel-level comparisons). Still not provided as of 2026-10-19.
 2. **Actual template IDs** behind the black-bar examples (issue 3) — to
    directly inspect their `background.color` values rather than reasoning
    about it in the abstract.
@@ -947,3 +946,23 @@ instructed; not investigated further in Phase 0 beyond confirming this.
    (a `cropped`/`untrustworthy` flag on `head_top` when `headVisible` is
    false), which is independent of shot-type filtering and still needs to
    be built — not blocked on fixtures, a Phase 2 code task.
+4. **Tried the tracker's own screenshot images as a fixture substitute —
+   empirically confirmed they don't work.** New tools
+   `scripts/debug-analyze-image.ts` and `scripts/debug-render-image.ts`
+   (bypass tenant/DB/storage entirely — just the real vision engine and
+   real framing solver against an arbitrary file) ran the pink-dress
+   "half-face" screenshot's original-image cell through the actual
+   pipeline. Two real, confirmed problems with using tracker screenshots
+   as fixtures, not assumed: (a) the crop is **180×133px native**
+   (upscaled for viewing) — the engine's own `quality.warnings` correctly
+   flagged `low_resolution`, and the framing solver's resulting
+   `max_upscale_clamped`/`crop_overflows_source` violations reflect that
+   resolution problem, not necessarily the real reported bug; (b) the
+   crop carries **baked-in UI chrome** from the tracker screenshot itself
+   (a visible button icon, a scrollbar edge) that contaminates the
+   subject region. The rendered output did NOT clearly reproduce issue
+   1's "half-face becomes full-face" symptom — inconclusive, not a
+   negative result, because the input itself isn't representative of a
+   real upload. **Both debug scripts are kept** — they're exactly what's
+   needed the moment a real fixture arrives, no further tooling work
+   required at that point.
