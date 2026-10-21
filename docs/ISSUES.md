@@ -1033,6 +1033,23 @@ migration under the design the spec describes, since nothing about the
 underlying resolution order changes. Deferred to its own phase as
 instructed; not investigated further in Phase 0 beyond confirming this.
 
+**Second correction, found later (2026-10-21) when a direct question
+prompted actually checking the UI rather than just the solver**: the
+editor UI itself already exists too, not just the mechanism it would sit
+on. `src/components/builder/framing-controls.tsx`'s `ShotTypePicker`
+lets someone assign `shotTypes` per framing rule, in both the builder's
+Simple mode (`primary.shotTypes`) and Advanced mode (per-strategy, in a
+reorderable rule list with live "active"/"n/a here" badges against the
+current preview subject and missing-anchor warnings). Confirmed via
+`git log --diff-filter=A` that this file was present in the repository's
+very first commit — it predates every phase of both the multi-tenancy
+work and this fix-issues program. **Phase 4, as originally scoped, is
+already done** — there is no remaining gap between "per-shot-type
+framing profiles" and what the template editor already offers, unless
+the original requester wants something more specific than per-rule
+`shotTypes` assignment (e.g. a guided wizard, or named presets bundling
+several settings per shot type) that hasn't been described yet.
+
 ---
 
 ## Open items before Phase 2/3 can fully proceed
