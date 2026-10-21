@@ -200,3 +200,70 @@ describe('solveFraming: a confident ankle is not cropped out when feet is weak/a
     expect(cropBottom).toBeGreaterThanOrEqual(1650)
   })
 })
+
+/**
+ * Phase 2/3 (docs/ISSUES.md issue 12 follow-up): confirmed against the real
+ * catalog — a back-facing full-body photo (DSC09744.png) had `feet` at 0.32
+ * confidence (below head_to_feet's 0.35 floor) because `feet`'s confidence is
+ * inherited from the overall person-box score, not the pixel row itself,
+ * while `ankle_center` — a real, independently scored pose keypoint on the
+ * same photo — read 0.57. The photo fell to `subject_fit` instead of
+ * `head_to_feet` even though every anchor needed for head-to-feet framing was
+ * genuinely present.
+ */
+describe('solveFraming: head_to_feet still applies when feet reads low-confidence but ankle_center confirms it (issue 12 follow-up)', () => {
+  it('uses head_to_feet when feet is below minConfidence but ankle_center clears it', () => {
+    const full_body = subject(
+      {
+        head_top: anchor(600, 100, 0.8, 'face_landmarks'),
+        ankle_center: anchor(600, 1550, 0.57),
+        feet: anchor(600, 1600, 0.32, 'person_mask'), // below the 0.35 floor on its own
+        subject_center: anchor(600, 900, 0.9, 'person_mask'),
+      },
+      'full_body',
+      1800
+    )
+
+    const result = solveFraming(full_body, FRAMING_PRESETS.full_body_editorial.spec, CANVAS)
+
+    expect(result.strategyId).toBe('head_to_feet')
+    expect(result.usedFallback).toBe(false)
+  })
+
+  it('still falls through to subject_fit when BOTH feet and ankle_center read low-confidence', () => {
+    const full_body = subject(
+      {
+        head_top: anchor(600, 100, 0.8, 'face_landmarks'),
+        ankle_center: anchor(600, 1550, 0.2),
+        feet: anchor(600, 1600, 0.32, 'person_mask'),
+        subject_center: anchor(600, 900, 0.9, 'person_mask'),
+      },
+      'full_body',
+      1800
+    )
+
+    const result = solveFraming(full_body, FRAMING_PRESETS.full_body_editorial.spec, CANVAS)
+
+    expect(result.strategyId).toBe('subject_fit')
+  })
+
+  it('still measures the span from the real feet anchor position, not ankle_center, once unlocked', () => {
+    const full_body = subject(
+      {
+        head_top: anchor(600, 100, 0.8, 'face_landmarks'),
+        ankle_center: anchor(600, 1550, 0.57),
+        feet: anchor(600, 1700, 0.32, 'person_mask'), // further down than ankle_center, as real feet are
+        subject_center: anchor(600, 900, 0.9, 'person_mask'),
+      },
+      'full_body',
+      1800
+    )
+
+    const result = solveFraming(full_body, FRAMING_PRESETS.full_body_editorial.spec, CANVAS)
+
+    expect(result.strategyId).toBe('head_to_feet')
+    // head_to_feet's scale is a head_top->feet span at 84%; confirm the crop
+    // reaches down toward the real feet y (1700), not the shallower ankle y.
+    expect(result.crop.y + result.crop.height).toBeGreaterThan(1600)
+  })
+})

@@ -279,7 +279,27 @@ export function isAnchorTrustworthy(name: AnchorName, anchor: Anchor): boolean {
 
 function hasAnchor(anchors: Anchors, name: AnchorName, minConfidence: number): boolean {
   const anchor = anchors[name]
-  return !!anchor && anchor.confidence >= minConfidence && isAnchorTrustworthy(name, anchor)
+  if (!!anchor && anchor.confidence >= minConfidence && isAnchorTrustworthy(name, anchor)) {
+    return true
+  }
+  // `feet`'s confidence (`estimateHead`'s sibling `feet` logic in anchors.ts)
+  // is inherited from the overall person-detection box score, not from the
+  // quality of the pixel row it actually measured — so a real, correctly
+  // placed feet anchor can read as low-confidence purely because the box
+  // score for that photo happened to be marginal, even while `ankle_center`
+  // (a genuine pose keypoint, scored independently) confidently confirms legs
+  // extend that far down. Confirmed against real catalog data: a back-facing
+  // full-body photo (docs/ISSUES.md issue 12 follow-up) had `feet` at 0.32
+  // confidence — just under this strategy's 0.35 floor — while `ankle_center`
+  // read 0.57 on the same photo. Same reasoning as the `keepInside` fix for
+  // issue 2: `ankle_center` is independent evidence, not a guess.
+  if (name === 'feet' && anchor) {
+    const ankle = anchors.ankle_center
+    if (ankle && ankle.confidence >= minConfidence && isAnchorTrustworthy('ankle_center', ankle)) {
+      return true
+    }
+  }
+  return false
 }
 
 /**

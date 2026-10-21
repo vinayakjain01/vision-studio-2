@@ -1079,6 +1079,60 @@ scope before changing it. `tests/framing/solver.test.ts`'s two
 instead (same trustworthiness-filter behavior, still covered) and a new
 test added confirming `half_body` now falls straight to `subject_fit`.
 
+**Follow-up after the user re-tested against the live app**: re-analysing
+the real 42-photo batch surfaced three more problem photos the user
+flagged directly — all investigated against the real data, not guessed:
+
+1. **DSC09744.png — correctly classified `full_body`, but rendered with
+   the `subject_fit` fallback instead of `head_to_feet`.** Root cause
+   confirmed via the real `vision_analyses` payload: `feet`'s confidence
+   (0.32) sits just under `head_to_feet`'s 0.35 floor, because `feet`'s
+   confidence is inherited from the overall person-detection BOX score
+   (`estimateFeet` in `anchors.ts`), not from the quality of the pixel row
+   it measured — while `ankle_center`, a real, independently scored pose
+   keypoint on the same photo, reads 0.57. Confirmed this is narrow
+   (checked all 42 photos: exactly 1 match) before fixing. **Fixed**:
+   `hasAnchor` in `src/framing/solver.ts` now also accepts `feet` when
+   `ankle_center` independently clears the strategy's `minConfidence` —
+   same reasoning already used for the `keepInside` fix above
+   (`ankle_center` is independent evidence, not a guess). The strategy
+   still measures the actual `feet` anchor's own position for geometry;
+   `ankle_center` only unlocks the gate. 3 new tests in
+   `tests/framing/solver.test.ts` (445 total, all passing).
+
+2. **DSC09371.png and DSC09771.png — visibly full-length back-facing
+   photos (confirmed by eye on the real screenshots) still classified
+   `product_only`, with `hasPerson: false`.** Investigated with
+   `scripts/debug-analyze-image.ts` against the real original files (not
+   the tenant DB, not a guess): the pose/person detector (YOLOv8n-pose)
+   returns **zero** person candidates at the default
+   `personScoreThreshold` (0.35). Lowering the threshold to 0.01 surfaces
+   a real candidate — box roughly matching the upper body, but scoring
+   only **0.21** overall, with most head/face keypoints well below their
+   visibility floor. Both photos have an unusually wide flared/feathered
+   train that makes the segmentation-derived subject box nearly as wide
+   as the frame (`subjectAspect` 1.41–1.55, far lower than a typical
+   standing figure's own bounding-box aspect), which plausibly confuses a
+   general-purpose person detector trained on more typical poses.
+   **Not fixed yet — needs a decision, not a guess.** Two real options,
+   each with a real cost:
+   - Lower `VISION_PERSON_SCORE_THRESHOLD` (currently 0.35) tenant/site-
+     wide — cheap, but unvalidated at this lower bar across every other
+     tenant's photos; risks new false-positive "phantom person"
+     detections on texture/pattern noise elsewhere, which the current
+     threshold exists to prevent.
+   - Add a segmentation-shape fallback to `classifyShot` for when the
+     person detector finds nothing but segmentation strongly suggests a
+     human silhouette — but a flat-laid garment with a dramatic spread
+     can produce a very similar `personCoverage`/`subjectAspect`
+     signature to these two real photos, and `classifyShot`'s own design
+     principle (see the file's header comment) is specifically that
+     bounding-box/aspect heuristics can't reliably tell those apart. Only
+     2 of 42 real photos hit this, too few to validate a general rule
+     against.
+   Flagged to the user directly in chat rather than shipped silently;
+   this entry exists so the decision and its reasoning aren't lost.
+
 ---
 
 ## Phase 4 feature scope note
