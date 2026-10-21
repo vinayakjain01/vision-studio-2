@@ -362,3 +362,27 @@ export const HEAD_FRAMEABLE_SHOTS: ShotType[] = [
 export function supportsHeadFraming(type: ShotType): boolean {
   return HEAD_FRAMEABLE_SHOTS.includes(type)
 }
+
+/**
+ * Shot types with no model in frame at all — a garment laid flat/on a ghost
+ * mannequin, or an isolated product shot. Phase 2/3 (docs/ISSUES.md issue 7
+ * — "hanger tilted or line above it in no-model shots"): AI Extend was
+ * previously never gated by shot type, so one of these assigned to an
+ * on-model template with `overflow: 'allow'` got generative-fill padding
+ * exactly like a person shot — paying for a Cloudinary call AND inheriting
+ * `compositor.ts`'s own documented, still-unresolved photo/generated-pad
+ * compositing seam, on a photo with no person to even justify extending a
+ * studio backdrop around.
+ *
+ * Deliberately narrower than "no person detected" — `detail` (a fabric/
+ * hardware/texture close-up) is excluded: extending the backdrop around an
+ * extreme close-up can be exactly what's wanted, and issue 7's own evidence
+ * is specifically about hanger/flat-lay shots, not every no-person shot
+ * type. See `src/jobs/worker.ts`'s `handleRenderJob`/
+ * `handleBackgroundFillJob`, the two call sites that check this.
+ */
+export const AI_EXTEND_INELIGIBLE_SHOTS: ShotType[] = ['product_only', 'flat_lay']
+
+export function eligibleForAiExtend(type: ShotType): boolean {
+  return !AI_EXTEND_INELIGIBLE_SHOTS.includes(type)
+}

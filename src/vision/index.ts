@@ -37,6 +37,12 @@ export {
   type ImageMetadata,
 } from './image'
 export { deriveAnchors, anchorBounds, type AnchorContext } from './analysis/anchors'
-export { classifyShot, supportsHeadFraming, HEAD_FRAMEABLE_SHOTS } from './analysis/shot-type'
+export {
+  classifyShot,
+  supportsHeadFraming,
+  HEAD_FRAMEABLE_SHOTS,
+  eligibleForAiExtend,
+  AI_EXTEND_INELIGIBLE_SHOTS,
+} from './analysis/shot-type'
 export { analyzeGarment, type GarmentContext } from './analysis/garment'
 export { assessQuality, type QualityContext } from './analysis/quality'

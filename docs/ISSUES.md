@@ -553,6 +553,39 @@ multiple past attempts already couldn't fully remove.
 template with AI Extend enabled, must not trigger a generative fill and
 must show no tilt and no visible line at the crop edge.
 
+**Status: Fixed** (fix plan item 1; item 2 turned out unnecessary — see
+below). New `eligibleForAiExtend`/`AI_EXTEND_INELIGIBLE_SHOTS`
+(`src/vision/analysis/shot-type.ts`) name exactly `product_only` and
+`flat_lay` — deliberately narrower than "no person detected": `detail`
+(a fabric/hardware/texture close-up) is excluded on purpose, since
+extending the backdrop around an extreme close-up can be exactly what's
+wanted, and issue 7's own evidence is specifically about hanger/flat-lay
+shots.
+
+New `resolveEffectiveBackground` (`src/jobs/worker.ts`, pure, exported
+for direct testing) downgrades a template's `ai_extend` mode to
+`edge_extend` — stretch the existing pixels, no network call, no
+compositing seam — whenever the photo's shot type is in that ineligible
+set, regardless of what the template itself is configured to use.
+Wired into **both** `handleRenderJob` (so the actual render never
+requests a generative fill for these shots) and `handleBackgroundFillJob`
+(so a fill job queued before this fix, or raced from a different code
+path, doesn't spend a real Cloudinary credit on a fill the render will
+now never look for).
+
+Fix plan item (2), "use subject-box framing with no overflow/padding",
+turned out to be unnecessary once item (1) was actually implemented:
+`boundary-classify.ts`'s missing hanger/hook vocabulary and
+`compositor.ts`'s documented photo/generated-pad seam are both only
+reachable through the `ai_extend` code path — now that these shot types
+never enter it at all, both are moot for them, not just mitigated. No
+solver/framing change was needed, which also means no risk to templates
+using `product_only`/`flat_lay` shot types for anything else.
+
+**Tests**: `tests/vision/shot-type-ai-extend.test.ts` (4 tests) and
+`tests/jobs/worker-ai-extend-gate.test.ts` (7 tests) — both pure
+decision logic, no fixture needed.
+
 ---
 
 ## Issue 8 — Direct image upload option

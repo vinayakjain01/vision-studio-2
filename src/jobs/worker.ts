@@ -31,7 +31,9 @@ import {
 } from '@/storage/media-store'
 import * as queue from './queue'
 import { ENGINE_VERSION } from '@/vision/model-registry'
-import { VisionUnavailableError } from '@/vision/types'
+import { VisionUnavailableError, type ShotType } from '@/vision/types'
+import { eligibleForAiExtend } from '@/vision/analysis/shot-type'
+import type { TemplateDocument } from '@/templates/types'
 import type { BackgroundFillJobPayload, RenderJobPayload, VisionJobPayload } from '@/db/types'
 
 export interface HandlerResult {
@@ -139,6 +141,30 @@ export async function handleVisionJob(payload: VisionJobPayload): Promise<Handle
 
 // ─── Render ──────────────────────────────────────────────────────────────────
 
+/**
+ * Phase 2/3 (docs/ISSUES.md issue 7 — "hanger tilted or line above it in
+ * no-model shots"): the template's OWN background mode is downgraded from
+ * `ai_extend` to `edge_extend` (stretch the existing pixels — no network
+ * call, no compositing seam) whenever the photo's shot type has no model in
+ * frame at all (`eligibleForAiExtend`), regardless of what the template is
+ * configured to use — most templates default to `ai_extend`, and a hanger/
+ * flat-lay/product-only shot has no person to justify extending a studio
+ * backdrop around.
+ *
+ * Pulled out pure (no vision metadata means "unknown, can't rule it
+ * ineligible" — the template's own mode passes through unchanged) so this
+ * decision is directly testable without a real job/tenant/DB — see
+ * tests/jobs/worker-ai-extend-gate.test.ts.
+ */
+export function resolveEffectiveBackground(
+  background: TemplateDocument['background'],
+  shotType: ShotType | undefined
+): TemplateDocument['background'] {
+  if (background.mode !== 'ai_extend') return background
+  if (!shotType || eligibleForAiExtend(shotType)) return background
+  return { ...background, mode: 'edge_extend' }
+}
+
 export async function handleRenderJob(
   payload: RenderJobPayload,
   context: { batchId: string | null }
@@ -165,6 +191,15 @@ export async function handleRenderJob(
 
   const source = await readMedia('originals', image.storageKey)
 
+  // Phase 2/3 (docs/ISSUES.md issue 7 — "hanger tilted or line above it in
+  // no-model shots"): see `resolveEffectiveBackground`'s own doc comment.
+  // Everything below reads `effectiveBackground`, never the template's own
+  // `background`, directly.
+  const effectiveBackground = resolveEffectiveBackground(
+    template.document.background,
+    metadata?.shot.type
+  )
+
   // AI Extend's actual generation happens in its OWN job kind, on its OWN
   // worker slots (see src/jobs/pool.ts) — never here. This render job's part
   // is just: does a cached result already exist? If so, read it. If not,
@@ -173,7 +208,7 @@ export async function handleRenderJob(
   // than blocking this render worker on a GPU call that belongs to a
   // different pool entirely.
   let precomputedBackground: Buffer | null = null
-  if (template.document.background.mode === 'ai_extend') {
+  if (effectiveBackground.mode === 'ai_extend') {
     const { overflow, edgeContent } = await computeAiExtendPlan(source, metadata, template.document)
     if (hasOverflow(overflow)) {
       // MUST be the same fully-composed prompt `handleBackgroundFillJob` uses
@@ -232,7 +267,10 @@ export async function handleRenderJob(
   const result = await renderCreative({
     source,
     vision: metadata,
-    template: template.document,
+    template:
+      effectiveBackground === template.document.background
+        ? template.document
+        : { ...template.document, background: effectiveBackground },
     variables: {
       product_name: product?.name ?? image.fileName,
       category: product?.category ?? '',
@@ -378,6 +416,18 @@ export async function handleBackgroundFillJob(
   }
 
   const { metadata } = getUsableAnalysis(sourceHash)
+
+  // Phase 2/3 (docs/ISSUES.md issue 7): same shot-type gate as
+  // handleRenderJob's `effectiveBackground` — a hanger/flat-lay/product-only
+  // shot never needs (or gets) a generative fill, regardless of the
+  // template's own mode. Checked here too, not just in handleRenderJob,
+  // because this job can run independently and first — skipping here is
+  // what stops it from spending a real Cloudinary credit on a fill the
+  // render will never actually use.
+  if (metadata && !eligibleForAiExtend(metadata.shot.type)) {
+    return { skipped: true, reason: `shot type '${metadata.shot.type}' is not eligible for AI Extend` }
+  }
+
   const source = await readMedia('originals', image.storageKey)
 
   const target = await buildAiExtendTarget(source, metadata, template.document)
