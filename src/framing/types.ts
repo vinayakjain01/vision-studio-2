@@ -418,7 +418,13 @@ export const FRAMING_PRESETS: Record<string, { name: string; description: string
       levelEyeLine: false,
       constraints: {
         ...DEFAULT_CONSTRAINTS,
-        maxUpscale: 1.2,
+        // Raised from the original 1.2x (2026-10-21, user request): a flat
+        // lay/product photo is frequently a smaller source image than an
+        // on-model shot, and this user's own real catalog needed more
+        // headroom to upscale before the solver would otherwise shrink the
+        // frame to fit. Trades some softness on the lowest-resolution
+        // sources for consistently filling the configured subject height.
+        maxUpscale: 3.0,
         // Deliberately NOT the `allow` default. A flat lay is a product on a
         // sweep with even margins around it — the whole look is the margin,
         // so zooming out until the piece fits is the intent rather than a
@@ -435,9 +441,18 @@ export const FRAMING_PRESETS: Record<string, { name: string; description: string
           requires: [],
           minConfidence: 0,
           shotTypes: [],
-          vertical: { anchor: 'subject_center', targetPct: 50 },
+          // `subject_top` @ 8.5% / 80% height, not the original `subject_
+          // center` @ 50% / 82%: confirmed directly against the user's real
+          // catalog (2026-10-21) as the configuration that actually frames a
+          // flat-lay/hanger photo the way they want — consistent headspace
+          // above the garment, not simply centered in the canvas. Kept as
+          // the single source of truth here: `withFlatLayDefaults` in
+          // `src/components/builder/framing-controls.tsx` reads these same
+          // three fields rather than duplicating the numbers, so the preset
+          // and the shot-type-picker auto-fill can never drift apart.
+          vertical: { anchor: 'subject_top', targetPct: 8.5 },
           horizontal: { anchor: 'subject_center', targetPct: 50 },
-          scale: { mode: 'subject', heightPct: 82 },
+          scale: { mode: 'subject', heightPct: 80 },
         },
       ],
     },

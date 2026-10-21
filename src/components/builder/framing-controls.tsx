@@ -379,6 +379,15 @@ function SimpleFraming({
  * issue 12's follow-up fell into (requires stuck at `head_top` with no way
  * to see or clear it).
  */
+// Single source of truth with the "Flat lay / product" preset (`src/
+// framing/types.ts`) — reading its strategy's own fields here, rather than
+// duplicating the numbers, is what keeps the preset dropdown and this
+// shot-type-picker auto-fill from drifting apart the way they already did
+// once (the preset originally used `subject_center`/82%, the pill used
+// `subject_top`/80%, until both were reconciled against the user's real
+// catalog on 2026-10-21).
+const FLAT_LAY_RULE = FRAMING_PRESETS.flat_lay.spec.strategies[0]
+
 function withFlatLayDefaults(
   strategy: FramingStrategy,
   nextShotTypes: ShotType[]
@@ -388,9 +397,9 @@ function withFlatLayDefaults(
   if (!newlySelectedFlatLay) return { shotTypes: nextShotTypes }
   return {
     shotTypes: nextShotTypes,
-    vertical: { anchor: 'subject_top', targetPct: 8.5 },
-    scale: { mode: 'subject', heightPct: 80 },
-    horizontal: { anchor: 'subject_center', targetPct: 50 },
+    vertical: FLAT_LAY_RULE.vertical,
+    scale: FLAT_LAY_RULE.scale,
+    horizontal: FLAT_LAY_RULE.horizontal,
   }
 }
 
