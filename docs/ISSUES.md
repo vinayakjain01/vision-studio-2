@@ -713,8 +713,13 @@ slow request for longer, not fix it.
 
 ## Issue 10 — Tool hangs and gets stuck
 
-**Status: Needs Phase 1 diagnostics; one real contributing bug found, not
-yet the full explanation.**
+**Status: Fixed** (this header was stale — written before the fix plan
+below was completed; both parts are done and validated by the Phase 1.7
+soak test further down, which ran 300 images across 3 tenants with zero
+stuck jobs). One caveat carried forward honestly: the UI stall warning
+itself (3-minute no-progress alert) was never exercised against a real
+live 3-minute stall, only verified via types/lint/build — see "Honestly
+scoped" below.
 
 Current queue state on production is quiescent (no pending/stuck jobs right
 now), and there's no OOM evidence — so whatever "stuck" looks like to the
@@ -1001,6 +1006,24 @@ photo renders with the garment's actual hem as the bottom anchor (not a
 stand/pole), no synthesized `head_top` forcing an unwanted zoom-out, and
 a clean (non-visible-seam) AI-Extended background around the mannequin's
 base.
+
+**Status: Resolved, workaround confirmed by the user (2026-10-21) — no
+code change.** Rather than fix `enforceKeepInside`'s phantom-anchor gap
+blind (still no real mannequin fixture to verify against), the user
+added a **"Flat lay"** rule to their real template's rule chain —
+mannequin photos already land on `flat_lay` today (see point 1 above,
+"a garment laid flat or on a ghost mannequin"). Configured with
+`subject_top` as the vertical anchor and a `subject_top → subject_bottom`
+(or `garment_top → garment_hem`) span for scale — the same anchors used
+for the Issue 12 follow-up's "Product Only" rule, which never depend on
+`head_top`/`feet` at all — this sidesteps the phantom-anchor gap entirely
+rather than fixing it: consistent subject height and headspace without
+ever touching a head-derived anchor. User confirmed this works on their
+real photos. The underlying `enforceKeepInside` gap (point 2 above) is
+still unfixed in the solver itself and would still affect anyone relying
+on the *default* framing preset for a mannequin/flat-lay shot without a
+dedicated rule — left as-is since the user's own case is resolved and no
+real fixture exists yet to safely fix the general case.
 
 ---
 
