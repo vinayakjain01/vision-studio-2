@@ -581,7 +581,18 @@ function AdvancedFraming({
     const strategy: FramingStrategy = {
       id: `strategy_${spec.strategies.length + 1}_${Math.random().toString(36).slice(2, 6)}`,
       label: `Rule ${spec.strategies.length + 1}`,
-      requires: ['head_top'],
+      // Empty, not ['head_top']: `requiredAnchors` below and the solver's own
+      // `implicitAnchors` already derive the real requirement from whatever
+      // vertical/horizontal/scale anchors are actually picked. A hardcoded
+      // 'head_top' here used to survive every edit to those fields — someone
+      // building a rule for a headless shot type (e.g. product_only) could
+      // repoint every anchor control away from head_top and the rule would
+      // still silently require it forever, with no UI control to ever clear
+      // it. Every built-in preset already follows this `requires: []`
+      // pattern for strategies whose vertical/scale alone fully describe
+      // what they need (see `src/framing/types.ts`) — `requires` is for
+      // anchors a strategy needs beyond what it positions against.
+      requires: [],
       minConfidence: 0.35,
       shotTypes: [],
       vertical: { anchor: 'head_top', targetPct: 10 },
