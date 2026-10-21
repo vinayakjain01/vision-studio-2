@@ -414,6 +414,48 @@ the spec requests.
 subject's feet meeting a visually grounded floor/shadow, not floating in
 empty padding.
 
+**Status: Fixed (fix plan item 1 only) — with an honest limit on what
+could actually be verified.** New `needsGroundedFeet`
+(`src/render/compositor.ts`, exported, pure) is true exactly when the
+bottom edge is being padded AND the photo has a real `feet` or
+`ankle_center` anchor. `buildFillPrompt`
+(`src/services/cloudinary-service.ts`) takes a new `groundFeet`
+parameter and, when true, appends an explicit instruction: continue the
+floor surface at the same perspective beneath the subject's actual feet
+and place a contact shadow there — the same "append an edge-specific
+clause to the base prompt" mechanism already used for garment
+continuation, not a new code path. Wired through both
+`computeAiExtendPlan` and `buildAiExtendTarget` (the two functions
+`handleRenderJob`'s cache lookup and `handleBackgroundFillJob`'s actual
+generation call already share for the garment-edge case), so both call
+sites compute the identical flag and can never disagree — the same
+guarantee `aiExtendCacheKind` already relied on for `edgeContent`.
+
+**What this fix cannot verify, and why**: this is a prompt change aimed
+at a GENERATIVE model's output. There is no way to check whether
+Cloudinary's actual generated image shows better grounding without
+either a real API call (spending a real credit — explicitly against this
+program's own rules) or a human looking at real output. 14 new tests
+(`tests/render/ground-feet.test.ts`, `tests/services/cloudinary-fill-
+prompt.test.ts`) verify everything that IS mechanically checkable
+without that: the trigger condition is correct (bottom-only, anchor
+required), the composed prompt text actually contains the grounding
+instruction when expected and doesn't when not, it combines correctly
+with the garment clause, and a different `groundFeet` value produces a
+different prompt string (which is what makes `aiExtendCacheKind`
+correctly treat it as a different fill to generate, not a cache hit on
+the old ungrounded one). Whether the instruction actually *works* on
+real photos is unverified — flagged here rather than assumed.
+
+Fix plan item 2 (a locally-composited synthetic contact shadow, gated
+behind a new `groundShadow` template setting) was NOT attempted: it's a
+new rendering feature requiring a schema change and visual tuning that
+can only be judged by looking at real output, which carries the same
+verification problem as the prompt change but with more surface area
+(new template field, new compositing code) for something still unverified
+to go wrong. Left for a future phase if the prompt-only fix proves
+insufficient once real photos are available.
+
 ---
 
 ## Issue 6 — Cannot handle multiple concurrent logins/requests

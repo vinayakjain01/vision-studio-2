@@ -689,7 +689,7 @@ export async function computeAiExtendPlan(
   source: Buffer,
   vision: VisionMetadata | null,
   template: TemplateDocument
-): Promise<{ overflow: FramingResult['overflow']; edgeContent: EdgeContent }> {
+): Promise<{ overflow: FramingResult['overflow']; edgeContent: EdgeContent; groundFeet: boolean }> {
   const image = await loadImageTolerant(source)
   const subject = toFramingSubject(vision, { width: image.width, height: image.height })
   const framing = solveFraming(subject, template.framing, {
@@ -699,7 +699,7 @@ export async function computeAiExtendPlan(
 
   const emptyEdges: EdgeContent = { top: null, left: null, right: null, bottom: null }
   if (!hasOverflow(framing.overflow)) {
-    return { overflow: framing.overflow, edgeContent: emptyEdges }
+    return { overflow: framing.overflow, edgeContent: emptyEdges, groundFeet: false }
   }
 
   const supersample = Math.max(1, Math.min(3, config.render.supersample))
@@ -707,7 +707,7 @@ export async function computeAiExtendPlan(
   const canvasHeight = Math.round(template.canvas.height * supersample)
   const placed = placedRect(image, framing.crop, canvasWidth, canvasHeight)
   if (!placed) {
-    return { overflow: framing.overflow, edgeContent: emptyEdges }
+    return { overflow: framing.overflow, edgeContent: emptyEdges, groundFeet: false }
   }
 
   const edgeContent = await classifyAiExtendEdges(
@@ -717,7 +717,28 @@ export async function computeAiExtendPlan(
     framing.overflow,
     vision
   )
-  return { overflow: framing.overflow, edgeContent }
+  return { overflow: framing.overflow, edgeContent, groundFeet: needsGroundedFeet(framing.overflow, vision) }
+}
+
+/**
+ * Phase 2/3 (docs/ISSUES.md issue 5 — "floating model with head-space
+ * padding"): true when the bottom edge is being padded AND the photo has a
+ * real feet/ankle anchor — the signal `buildFillPrompt` uses to ask
+ * Cloudinary for a grounded contact shadow there, instead of leaving the
+ * floor plane and the subject's feet entirely to the generative model's own
+ * guess (previously: one generic "continue backdrop" instruction, identical
+ * whether padding the top above the head or the bottom below the feet).
+ *
+ * Deliberately simple existence check, not a confidence/trustworthiness
+ * filter like `isAnchorTrustworthy` in `src/framing/solver.ts` — unlike a
+ * head anchor, `feet`/`ankle_center` have no "extrapolated past the frame
+ * edge" failure mode (see issue 2's own investigation), so any anchor that
+ * made it into `vision.anchors` here is real evidence the feet are roughly
+ * there.
+ */
+export function needsGroundedFeet(overflow: FramingResult['overflow'], vision: VisionMetadata | null): boolean {
+  if (overflow.bottom <= 0.5) return false
+  return vision?.anchors.feet != null || vision?.anchors.ankle_center != null
 }
 
 /** True when there is enough overflow to be worth generating a fill for. */
@@ -844,6 +865,8 @@ export interface AiExtendTarget {
    * `boundary-classify.ts` for the classification itself.
    */
   edgeContent: EdgeContent
+  /** See `needsGroundedFeet`'s doc comment — feeds `buildFillPrompt`'s grounding clause (issue 5). */
+  groundFeet: boolean
 }
 
 /**
@@ -930,6 +953,7 @@ export async function buildAiExtendTarget(
     placedHeight: cut.height,
     overflow: framing.overflow,
     edgeContent,
+    groundFeet: needsGroundedFeet(framing.overflow, vision),
   }
 }
 

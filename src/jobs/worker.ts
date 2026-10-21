@@ -209,12 +209,13 @@ export async function handleRenderJob(
   // different pool entirely.
   let precomputedBackground: Buffer | null = null
   if (effectiveBackground.mode === 'ai_extend') {
-    const { overflow, edgeContent } = await computeAiExtendPlan(source, metadata, template.document)
+    const { overflow, edgeContent, groundFeet } = await computeAiExtendPlan(source, metadata, template.document)
     if (hasOverflow(overflow)) {
       // MUST be the same fully-composed prompt `handleBackgroundFillJob` uses
       // below — see `aiExtendCacheKind`'s doc comment. `computeAiExtendPlan`
-      // is what guarantees `edgeContent` agrees between the two call sites.
-      const prompt = buildFillPrompt(template.document.background.backdropPrompt, edgeContent)
+      // is what guarantees `edgeContent`/`groundFeet` agree between the two
+      // call sites.
+      const prompt = buildFillPrompt(template.document.background.backdropPrompt, edgeContent, groundFeet)
       const kind = aiExtendCacheKind(overflow, prompt)
       const key = derivedKey(sourceHash, kind, 'jpg')
 
@@ -437,7 +438,7 @@ export async function handleBackgroundFillJob(
 
   // Same composition `handleRenderJob`'s cache lookup uses — see
   // `aiExtendCacheKind`'s doc comment for why the two must never diverge.
-  const prompt = buildFillPrompt(template.document.background.backdropPrompt, target.edgeContent)
+  const prompt = buildFillPrompt(template.document.background.backdropPrompt, target.edgeContent, target.groundFeet)
   const kind = aiExtendCacheKind(target.overflow, prompt)
   const key = derivedKey(sourceHash, kind, 'jpg')
 

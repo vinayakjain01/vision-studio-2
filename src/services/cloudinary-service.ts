@@ -153,25 +153,49 @@ function joinEdgeNames(names: string[]): string {
  * both, so changing it for those cases risks fixing nothing while breaking
  * behaviour confirmed to already work.
  */
-export function buildFillPrompt(basePrompt: string | undefined, edges: EdgeContent): string {
+/**
+ * `groundFeet` (Phase 2/3, docs/ISSUES.md issue 5 — "floating model with
+ * head-space padding"): true when the photo has a real feet/ankle anchor
+ * AND the bottom edge is being padded (`needsGroundedFeet` in
+ * compositor.ts — the one place that computes it, so both call sites of
+ * this function agree). Appends an explicit grounding instruction so the
+ * generated floor meets the subject's actual feet with a contact shadow,
+ * instead of leaving the ground plane entirely to the model's own guess —
+ * the base/default prompt only ever said "continue backdrop floor lighting
+ * and shadow", with nothing telling it WHERE the feet are.
+ */
+export function buildFillPrompt(basePrompt: string | undefined, edges: EdgeContent, groundFeet = false): string {
   const base = basePrompt?.trim() || DEFAULT_PROMPT
 
   const garmentEdges = (Object.keys(EDGE_NAME) as (keyof typeof EDGE_NAME)[]).filter(
     edge => edges[edge] === 'garment'
   )
-  if (garmentEdges.length === 0) return base
 
-  const edgeList = joinEdgeNames(garmentEdges.map(edge => EDGE_NAME[edge]))
-  const plural = garmentEdges.length > 1
+  let prompt = base
 
-  return (
-    `${base} except at the ${edgeList} ${plural ? 'edges' : 'edge'} of the frame where the ` +
-    'visible garment fabric has been cropped by the photo and does not end there continue that ' +
-    'exact same fabric its embroidery pattern colour and natural drape as a direct physical ' +
-    'continuation of the garment beyond that edge rather than inventing where it ends do not ' +
-    'generate skin limbs or any other body part in that specific region and do not generate a ' +
-    'hem cuff or any garment edge or ending there'
-  )
+  if (garmentEdges.length > 0) {
+    const edgeList = joinEdgeNames(garmentEdges.map(edge => EDGE_NAME[edge]))
+    const plural = garmentEdges.length > 1
+
+    prompt +=
+      ` except at the ${edgeList} ${plural ? 'edges' : 'edge'} of the frame where the ` +
+      'visible garment fabric has been cropped by the photo and does not end there continue that ' +
+      'exact same fabric its embroidery pattern colour and natural drape as a direct physical ' +
+      'continuation of the garment beyond that edge rather than inventing where it ends do not ' +
+      'generate skin limbs or any other body part in that specific region and do not generate a ' +
+      'hem cuff or any garment edge or ending there'
+  }
+
+  if (groundFeet) {
+    prompt +=
+      ' the subject is standing near the bottom edge of the frame continue the floor surface ' +
+      'exactly beneath their feet at the same perspective and place a soft natural contact ' +
+      'shadow directly under the feet where they meet the floor so the subject reads as standing ' +
+      'on the ground rather than floating above it do not generate additional legs feet or any ' +
+      'other body part in the newly added area below the frame'
+  }
+
+  return prompt
 }
 
 export interface GenerativeFillRequest {
