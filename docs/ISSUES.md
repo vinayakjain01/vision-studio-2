@@ -141,47 +141,47 @@ no longer cropped out when feet is absent).
 
 ## Issue 3 — Black bars top/bottom
 
-**Status: Strong hypothesis**, with the two most likely explanations from
-the original spec actively **ruled out** by the code.
+**Status: Fixed.** The original two hypotheses stayed ruled out
+(uninitialized transparent canvas; a failed AI Extend silently falling
+back) — the third, "an invalid/empty `background.color`", was confirmed
+**empirically**, not just by reading the code: `@napi-rs/canvas` (the
+actual rendering engine, tested directly) keeps the previous `fillStyle`
+on an invalid assignment, defaulting to black on a fresh context. The
+real path an invalid value reaches a template: the free-text hex field
+next to the colour swatch (`src/components/builder/background-
+controls.tsx`) has no `onChange` validation, and the swatch's own
+display fallback to white can make an already-broken saved value look
+fine in the picker while the underlying `background.color` stays
+invalid.
 
-Ruled out: the canvas is never left transparent/uninitialized going into
-export — every background mode (`solid`/`gradient`/`blur_extend`/
-`edge_extend`/`ai_extend`) fills the entire canvas with an opaque color
-*before* anything else is drawn (`src/render/compositor.ts:306–363`). Also
-ruled out: a failed AI Extend fill does not fall back to a blank/unfilled
-render — `src/jobs/worker.ts:171-226` explicitly `throw`s on a genuine
-Cloudinary failure rather than rendering anything, matching the documented
-contract at `src/templates/types.ts:59–62` ("never falls back to a plain
-fill silently").
+**Fix** (all three parts of the original plan, done):
+1. `src/templates/types.ts`'s new `isValidHexColor`/
+   `sanitizeBackgroundColor` — one shared source of truth.
+2. `src/app/api/templates/[templateId]/route.ts`'s `validateDocument`
+   now rejects a non-hex `background.color`/`gradientFrom`/`gradientTo`
+   at save time.
+3. `src/render/compositor.ts`'s `drawBackground` sanitizes the color
+   before every use regardless — a backstop for whatever is already in
+   the database today, which (2) alone can never fix retroactively.
 
-Most likely remaining explanation: a `solid`/`gradient` background whose
-`background.color` is empty or invalid on a *specific template's* saved
-data. `BackgroundSettings.color` has no runtime validation
-(`src/templates/types.ts` — plain interface, no zod/schema check found).
-Canvas2D's own behavior for an invalid `fillStyle` string is to silently
-keep the *previous* value, which for a freshly created 2D context defaults
-to black — so a corrupted/empty `color` on one template would paint the
-whole canvas black, visible wherever the subject's placed rect doesn't
-reach the canvas edge (i.e., exactly where letterboxing/padding normally
-shows the intended background color).
+Also built the invariant I3 backstop: `detectAnomalousBlackEdges`
+(exported, pure pixel logic) runs after every render, comparing the
+edge bands' near-black ratio against the image's own centre — flagging
+the "black bars" symptom from ANY future cause while correctly letting
+a genuinely all-black product photo through (its centre is near-black
+too, so the comparison doesn't fire). A flagged render throws
+`RenderQualityError` rather than shipping silently.
 
-**Files**: `src/render/compositor.ts:306–363` (`drawBackground`),
-`src/templates/types.ts` (`BackgroundSettings`, `DEFAULT_BACKGROUND.color =
-'#ffffff'`).
+**Files**: `src/templates/types.ts`, `src/app/api/templates/
+[templateId]/route.ts`, `src/render/compositor.ts`.
 
-**Fix plan**: (1) validate `background.color` on template save (reject or
-coerce an invalid/empty color rather than letting it reach the renderer),
-(2) add the post-render check the spec's invariant I3 already asks for —
-fail (not silently ship) a render whose edge rows/columns are uniformly
-near-black when the source content is not. This is a backstop regardless of
-root cause, and would have caught this independent of why it happened.
-(3) Directly inspect the actual templates involved once fixtures/template
-IDs are available — this is the one piece of real verification still
-missing before calling this fully confirmed.
-
-**Acceptance test**: no production template may have an empty/invalid
-`background.color`; the post-render check fails any future render that
-would otherwise ship with a near-black bar on a non-black source.
+**Tests**: `tests/templates/background-color.test.ts` (8 tests, the
+validator/sanitizer — pure, no fixture) and `tests/render/black-edge-
+detection.test.ts` (5 tests, the backstop — paints known patterns
+directly with `@napi-rs/canvas`, the real engine, still no photo
+needed). The actual corrupted template(s) in production were never
+directly inspected (no template IDs were provided) — not needed once
+the mechanism was confirmed and fixed at every layer it could occur.
 
 ---
 
