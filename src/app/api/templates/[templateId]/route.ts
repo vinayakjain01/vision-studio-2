@@ -8,7 +8,7 @@
 
 import { NextRequest } from 'next/server'
 import { templates } from '@/db/repositories'
-import { TEMPLATE_SCHEMA_VERSION, type TemplateDocument } from '@/templates/types'
+import { TEMPLATE_SCHEMA_VERSION, isValidHexColor, type TemplateDocument } from '@/templates/types'
 import { handler, ok, badRequest, notFound } from '@/lib/api-handler'
 
 export const dynamic = 'force-dynamic'
@@ -96,6 +96,27 @@ function validateDocument(document: unknown): string | null {
   }
   if (!Array.isArray(doc.layers)) return 'document.layers must be an array'
   if (doc.layers.length > 100) return 'a template may contain at most 100 layers'
+
+  // Phase 2/3 (docs/ISSUES.md issue 3 — "black bars"): an invalid/empty
+  // background color silently renders black (Canvas2D keeps the previous
+  // fillStyle on an invalid assignment — see compositor.ts's own doc
+  // comment). Rejected here so a bad save-time value never reaches a render
+  // worker, which is the one real fix available for templates saved going
+  // forward; compositor.ts's own defensive fallback covers what's already
+  // in the database.
+  if (doc.background) {
+    if (!isValidHexColor(doc.background.color)) {
+      return 'document.background.color must be a hex color (#rgb, #rrggbb or #rrggbbaa)'
+    }
+    if (doc.background.mode === 'gradient') {
+      if (!isValidHexColor(doc.background.gradientFrom)) {
+        return 'document.background.gradientFrom must be a hex color (#rgb, #rrggbb or #rrggbbaa)'
+      }
+      if (!isValidHexColor(doc.background.gradientTo)) {
+        return 'document.background.gradientTo must be a hex color (#rgb, #rrggbb or #rrggbbaa)'
+      }
+    }
+  }
 
   return null
 }

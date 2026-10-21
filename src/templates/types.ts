@@ -86,6 +86,39 @@ export interface BackgroundSettings {
   backdropPrompt: string
 }
 
+/**
+ * Phase 2/3 (docs/ISSUES.md issue 3 — "black bars top/bottom"). `color` (and
+ * `gradientFrom`/`gradientTo`) feed `CanvasRenderingContext2D.fillStyle`
+ * directly (`src/render/compositor.ts`'s `drawBackground`) — Canvas2D's own
+ * behavior for an invalid `fillStyle` assignment is to silently KEEP
+ * whatever value was already set (confirmed directly against `@napi-rs/
+ * canvas`, the engine this app actually renders with), which for a freshly
+ * created context is black. An empty or malformed color therefore doesn't
+ * fail to render — it paints the whole canvas black, visible wherever the
+ * background shows through the subject.
+ *
+ * The free-text hex field next to the colour swatch
+ * (`src/components/builder/background-controls.tsx`) has no `onChange`
+ * validation of its own — the swatch itself falls back to white for
+ * DISPLAY when the typed value isn't a valid 6-digit hex, which can make an
+ * already-invalid `background.color` look fine in the picker while the
+ * underlying saved value stays broken. This is the confirmed path a
+ * template's `color` reaches the renderer invalid.
+ *
+ * Deliberately only `#rgb`/`#rrggbb`/`#rrggbbaa` — every color this app's
+ * own UI ever produces (the native `<input type="color">` swatch always
+ * emits 6-digit hex); not a general CSS color grammar, which would accept
+ * far more than this app's pickers can ever actually produce.
+ */
+export function isValidHexColor(value: unknown): value is string {
+  return typeof value === 'string' && /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(value)
+}
+
+/** `background.color` if valid, else `DEFAULT_BACKGROUND.color` — the last-resort guard `drawBackground` applies so an already-corrupted template (saved before `isValidHexColor` existed, or written directly to the database) still renders a background instead of defaulting to black. */
+export function sanitizeBackgroundColor(color: unknown): string {
+  return isValidHexColor(color) ? color : DEFAULT_BACKGROUND.color
+}
+
 export const DEFAULT_BACKGROUND: BackgroundSettings = {
   /**
    * `ai_extend` by default, paired with the `allow` overflow default in

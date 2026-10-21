@@ -36,7 +36,7 @@ import type {
   TemplateVariableValues,
   TextLayer,
 } from '@/templates/types'
-import { resolveTemplateVariables } from '@/templates/types'
+import { resolveTemplateVariables, sanitizeBackgroundColor } from '@/templates/types'
 import type { VisionMetadata } from '@/vision/types'
 import { config } from '@/config'
 import { resolvePath, readMedia, mediaExists } from '@/storage/media-store'
@@ -119,6 +119,82 @@ export interface RenderOutput {
   height: number
   framing: FramingResult
   durationMs: number
+}
+
+/**
+ * Thrown by `renderCreative` when `detectAnomalousBlackEdges` catches a
+ * render before it ships — a genuine content-quality failure, not a
+ * transient/infrastructure one, so it gets no special defer/retry handling
+ * in `src/jobs/worker.ts`: it consumes a normal retry attempt and surfaces
+ * in the batch's failures list, same as any other unexpected render error.
+ */
+export class RenderQualityError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RenderQualityError'
+  }
+}
+
+/** Max per-channel value (0-255) still counted as "near black". */
+const NEAR_BLACK_CHANNEL_MAX = 12
+/** Thickness of the sampled edge band, as a fraction of the shorter canvas dimension. */
+const EDGE_BAND_FRACTION = 0.02
+/** Fraction of an edge band's pixels that must be near-black to flag that edge. */
+const EDGE_NEAR_BLACK_RATIO = 0.95
+/** How much higher the edge's near-black ratio must be than the centre's own, to rule out a genuinely all-black photo (a black garment on a black backdrop) rather than a corrupted background. */
+const CENTER_NEAR_BLACK_RATIO_GAP = 0.5
+
+/**
+ * Phase 2/3 (docs/ISSUES.md issue 3's invariant I3): samples the four edge
+ * bands and a central region of the FINAL (post-downscale) canvas and flags
+ * a render whose edges are overwhelmingly near-black while its own centre
+ * is not — the visible symptom of a `fillStyle` that silently fell back to
+ * Canvas2D's black default (see `sanitizeBackgroundColor`'s doc comment),
+ * and a reasonable proxy for "something painted the backdrop black" from
+ * any other cause too. Comparing against the centre, rather than flagging
+ * on the edge ratio alone, is what lets a genuinely all-black product photo
+ * through — its centre is near-black as well, so the gap check fails and
+ * nothing is flagged.
+ */
+export function detectAnomalousBlackEdges(canvas: Canvas, width: number, height: number): boolean {
+  const ctx = canvas.getContext('2d')
+  const bandPx = Math.max(2, Math.round(Math.min(width, height) * EDGE_BAND_FRACTION))
+
+  function nearBlackRatio(x: number, y: number, w: number, h: number): number {
+    if (w <= 0 || h <= 0) return 0
+    const { data } = ctx.getImageData(x, y, w, h)
+    let count = 0
+    const total = w * h
+    for (let i = 0; i < data.length; i += 4) {
+      if (
+        data[i] <= NEAR_BLACK_CHANNEL_MAX &&
+        data[i + 1] <= NEAR_BLACK_CHANNEL_MAX &&
+        data[i + 2] <= NEAR_BLACK_CHANNEL_MAX
+      ) {
+        count++
+      }
+    }
+    return total > 0 ? count / total : 0
+  }
+
+  const edgeRatio = Math.max(
+    nearBlackRatio(0, 0, width, bandPx), // top
+    nearBlackRatio(0, Math.max(0, height - bandPx), width, bandPx), // bottom
+    nearBlackRatio(0, 0, bandPx, height), // left
+    nearBlackRatio(Math.max(0, width - bandPx), 0, bandPx, height) // right
+  )
+  if (edgeRatio < EDGE_NEAR_BLACK_RATIO) return false
+
+  const centerW = Math.round(width * 0.4)
+  const centerH = Math.round(height * 0.4)
+  const centerRatio = nearBlackRatio(
+    Math.round((width - centerW) / 2),
+    Math.round((height - centerH) / 2),
+    centerW,
+    centerH
+  )
+
+  return edgeRatio - centerRatio >= CENTER_NEAR_BLACK_RATIO_GAP
 }
 
 /**
@@ -243,6 +319,19 @@ export async function renderCreative(input: RenderInput): Promise<RenderOutput> 
   const finalCanvas =
     supersample === 1 ? canvas : downscale(canvas, outputSize.width, outputSize.height)
 
+  // Phase 2/3 (docs/ISSUES.md issue 3, invariant I3): a backstop alongside
+  // `sanitizeBackgroundColor`'s fix at the source, not instead of it — by
+  // the time this runs the wrong background is already drawn, so this can
+  // only detect the symptom, not correct it. Catches this specific failure
+  // mode regardless of what causes it (not just an invalid background.color
+  // that slipped past validation) before a broken creative ships.
+  if (detectAnomalousBlackEdges(finalCanvas, outputSize.width, outputSize.height)) {
+    throw new RenderQualityError(
+      'Rendered output has uniformly near-black edges while the rest of the image does not — ' +
+        'likely an invalid or corrupted background color reaching the renderer. Check this template\'s background settings.'
+    )
+  }
+
   const format = input.format ?? 'jpeg'
   const buffer =
     format === 'png'
@@ -303,9 +392,18 @@ function drawBackground(
   crop: CropBox,
   precomputedBackground: Awaited<ReturnType<typeof loadImage>> | null
 ): void {
+  // Phase 2/3 (docs/ISSUES.md issue 3 — "black bars"): an invalid/empty
+  // `background.color` reaching `fillStyle` directly silently paints black
+  // (Canvas2D keeps the previous value on an invalid assignment, which
+  // defaults to black on a fresh context — confirmed against @napi-rs/
+  // canvas). Sanitized once, here, as a backstop for a template saved
+  // before `isValidHexColor` existed at the API layer — never trust that
+  // every row in the database already passed that check.
+  const color = sanitizeBackgroundColor(background.color)
+
   switch (background.mode) {
     case 'ai_extend': {
-      ctx.fillStyle = background.color
+      ctx.fillStyle = color
       ctx.fillRect(0, 0, width, height)
       if (precomputedBackground) {
         // Already canvas-sized — it was generated FROM this exact canvas (see
@@ -332,8 +430,8 @@ function drawBackground(
       const dx = Math.sin(angle) * halfSpan
       const dy = -Math.cos(angle) * halfSpan
       const gradient = ctx.createLinearGradient(cx - dx, cy - dy, cx + dx, cy + dy)
-      gradient.addColorStop(0, background.gradientFrom)
-      gradient.addColorStop(1, background.gradientTo)
+      gradient.addColorStop(0, sanitizeBackgroundColor(background.gradientFrom))
+      gradient.addColorStop(1, sanitizeBackgroundColor(background.gradientTo))
       ctx.fillStyle = gradient
       ctx.fillRect(0, 0, width, height)
       return
@@ -341,14 +439,14 @@ function drawBackground(
 
     case 'blur_extend': {
       // Fill first: the blurred copy may not cover every pixel once zoomed.
-      ctx.fillStyle = background.color
+      ctx.fillStyle = color
       ctx.fillRect(0, 0, width, height)
       drawBlurredFill(ctx, image, crop, width, height, background)
       return
     }
 
     case 'edge_extend': {
-      ctx.fillStyle = background.color
+      ctx.fillStyle = color
       ctx.fillRect(0, 0, width, height)
       // Stretch the crop's own pixels to fill — cheaper than a blur and enough
       // when the backdrop is a plain seamless.
@@ -358,7 +456,7 @@ function drawBackground(
 
     case 'solid':
     default:
-      ctx.fillStyle = background.color
+      ctx.fillStyle = color
       ctx.fillRect(0, 0, width, height)
   }
 }
