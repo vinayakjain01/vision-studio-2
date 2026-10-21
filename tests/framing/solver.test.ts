@@ -1,18 +1,22 @@
 import { describe, it, expect } from 'vitest'
 import { solveFraming, isAnchorTrustworthy } from '@/framing/solver'
-import { FRAMING_PRESETS } from '@/framing/types'
-import type { Anchor, Anchors, FramingSubject } from '@/vision/types'
+import { FRAMING_PRESETS, type FramingSubject } from '@/framing/types'
+import type { Anchor, Anchors } from '@/vision/types'
 
 function anchor(x: number, y: number, confidence = 0.8, source: Anchor['source'] = 'keypoints'): Anchor {
   return { x, y, confidence, source }
 }
 
-function subject(anchors: Anchors, shotType: FramingSubject['shotType'] = 'full_body'): FramingSubject {
+function subject(
+  anchors: Anchors,
+  shotType: FramingSubject['shotType'] = 'full_body',
+  imageHeight = 1600
+): FramingSubject {
   return {
-    image: { width: 1200, height: 1600 },
+    image: { width: 1200, height: imageHeight },
     anchors,
     shotType,
-    subjectBox: { left: 300, top: 0, right: 900, bottom: 1600 },
+    subjectBox: { left: 300, top: 0, right: 900, bottom: imageHeight },
   }
 }
 
@@ -122,5 +126,57 @@ describe('solveFraming: a cropped head never gets forced into frame (issues 1/11
     // trying to reach y=-300.
     const keepInsideViolation = result.violations.find(v => v.code === 'keep_inside_violated')
     expect(keepInsideViolation).toBeUndefined()
+  })
+})
+
+/**
+ * Phase 2/3 (docs/ISSUES.md issue 2 — "full-length pants become short
+ * pants"): empirically disproves the originally-hypothesized mechanism
+ * (an ANCHOR_FLOOR vs. strategy minConfidence gap on the `feet` anchor
+ * itself) — enforceKeepInside already protects a low-confidence-but-
+ * PRESENT `feet` anchor regardless of the winning strategy, confirmed
+ * below. The real, confirmed gap: `ankle_center` is a SEPARATE anchor from
+ * `feet` (src/vision/analysis/anchors.ts), classification already trusts
+ * it alone to call a shot `full_body` (`anklesVisible` in shot-type.ts),
+ * but the solver's `keepInside` list never named it — so a confident ankle
+ * detection got silently cropped out whenever `feet` itself was weak or
+ * entirely absent (no garment-parse/mask pixel reached the floor).
+ */
+describe('solveFraming: a confident ankle is not cropped out when feet is weak/absent (issue 2)', () => {
+  it('a low-confidence-but-present feet anchor was ALREADY protected by enforceKeepInside before this fix — confirming the original hypothesis was wrong', () => {
+    const full_body = subject(
+      {
+        head_top: anchor(600, 100, 0.8, 'face_box'),
+        knee_center: anchor(600, 1300, 0.6),
+        ankle_center: anchor(600, 1650, 0.3), // passes classification's ANCHOR_FLOOR (0.25), below the strategy's minConfidence (0.35)
+        feet: anchor(600, 1790, 0.15, 'extrapolated'), // present, but also below minConfidence
+      },
+      'full_body',
+      1800
+    )
+
+    const result = solveFraming(full_body, FRAMING_PRESETS.full_body_editorial.spec, CANVAS)
+
+    // head_to_feet correctly can't use this low-confidence `feet` as its own
+    // anchor, but keepInside still pulls the crop down to include it.
+    expect(result.crop.y + result.crop.height).toBeGreaterThanOrEqual(1790)
+  })
+
+  it('the REAL gap: a confident ankle_center is cropped out when feet is entirely absent — now fixed by adding ankle_center to keepInside', () => {
+    const full_body = subject(
+      {
+        head_top: anchor(600, 100, 0.8, 'face_box'),
+        knee_center: anchor(600, 1300, 0.6),
+        ankle_center: anchor(600, 1650, 0.3),
+        // no `feet` anchor at all — e.g. garment parsing/mask never reached the floor.
+      },
+      'full_body',
+      1800
+    )
+
+    const result = solveFraming(full_body, FRAMING_PRESETS.full_body_editorial.spec, CANVAS)
+
+    const cropBottom = result.crop.y + result.crop.height
+    expect(cropBottom).toBeGreaterThanOrEqual(1650)
   })
 })

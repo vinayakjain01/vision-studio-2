@@ -279,7 +279,18 @@ export const FRAMING_PRESETS: Record<string, { name: string; description: string
         // Both ends of the figure are guarded, not just the crown: a boundary
         // fix that keeps the head on target must not be free to push the feet
         // out the bottom in the process.
-        keepInside: ['head_top', 'feet', 'knee_center'],
+        //
+        // `ankle_center` (Phase 2/3, docs/ISSUES.md issue 2 — "full-length
+        // pants become short pants") is deliberately included alongside
+        // `feet`: the two are derived independently (`src/vision/analysis/
+        // anchors.ts`), and `feet` can be absent or low-confidence (no
+        // garment-parse/mask pixel reached the floor) on a photo where
+        // `ankle_center` is still a confident, real pose-keypoint detection.
+        // Classification already trusts `ankle_center` alone to call a shot
+        // `full_body` (`anklesVisible` in shot-type.ts) — the solver must
+        // honor the same anchor, not just `feet`, or a confidently-detected
+        // ankle gets silently cropped out whenever `feet` itself is weak.
+        keepInside: ['head_top', 'feet', 'knee_center', 'ankle_center'],
         keepInsidePaddingPct: 1,
       },
       strategies: [

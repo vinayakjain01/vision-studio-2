@@ -94,47 +94,48 @@ head would be.
 
 ## Issue 2 — Full-length pants become short pants
 
-**Status: Confirmed root cause** (verified directly against the source).
+**Status: Fixed.** The originally-hypothesized mechanism (an
+`ANCHOR_FLOOR` vs. strategy `minConfidence` gap on the `feet` anchor
+itself) was **empirically tested and disproved** before implementing
+anything — `enforceKeepInside` was already pulling a low-confidence
+`feet` anchor back into frame regardless of whether `head_to_feet`
+itself could use it (confirmed with a synthetic `solveFraming()` call: a
+`feet` anchor at confidence 0.15, well under every relevant threshold,
+still got the crop extended to include it). The original "Confirmed root
+cause" status was a hypothesis that read correctly from the code's
+structure but turned out wrong once actually run — recorded here rather
+than quietly dropped.
 
-`shot-type.ts:46` sets `ANCHOR_FLOOR = 0.25` — the confidence floor used to
-decide an ankle/foot anchor is "visible" for **classification** purposes.
-`src/framing/types.ts:290` sets `minConfidence: 0.35` on the `head_to_feet`
-strategy inside the `full_body_editorial` preset (the default preset,
-`DEFAULT_FRAMING_PRESET`, line 450) — the confidence the **solver** requires
-to actually use the `feet` anchor for a full-length crop.
+**The real, confirmed gap**: `ankle_center` and `feet` are two
+**separate** anchors (`src/vision/analysis/anchors.ts`) — `feet` depends
+on garment-parse pixels or the person mask reaching the floor, which can
+fail (a dark hem against a dark floor, a shadow, a mask that doesn't
+extend past the frame) even when the pose model's `ankle_center`
+keypoint is confidently resolved. `shot-type.ts`'s `anklesVisible`
+signal already trusts `ankle_center` alone to classify a shot
+`full_body` — but the solver's `keepInside` list
+(`full_body_editorial`'s `constraints.keepInside`, `types.ts:282`) never
+named `ankle_center`, only `feet`. So whenever `feet` was weak or
+entirely absent, a confidently-detected ankle got silently cropped out
+by `head_to_knees`'s knee-level fallback — full pants read as shorts —
+even though the pose model had already told the classifier the ankles
+were there.
 
-A photo whose feet-anchor confidence lands between 0.25 and 0.35 is
-correctly classified `full_body` (feet "visible" by the classifier's own
-threshold), but the solver's `head_to_feet` strategy rejects that same
-anchor as not confident enough and silently falls through to
-`head_to_knees` (lines 297–300, same `minConfidence: 0.35`, spanning only
-`head_top`→`knee_center`) — a real, intentional knee-length crop applied to
-a photo whose full pants were actually visible and detected, just one
-confidence tier short of what the crop strategy demands.
+**Fix**: `ankle_center` added to `full_body_editorial`'s `keepInside`
+list, alongside `feet`. Confirmed with a synthetic test (no fixture
+needed — this is pure solver logic): a `full_body` subject with a
+confident `ankle_center` and no `feet` anchor at all now gets a crop
+whose bottom edge reaches the ankle, not the knee.
 
-The `keepInside: ['head_top', 'feet', 'knee_center']` safety net
-(`types.ts:282`) only protects an anchor that exists and is already in use
-by the selected strategy — it does not reach back and reconsider a
-rejected-for-low-confidence `feet` anchor.
+**Files**: `src/framing/types.ts:282` (`full_body_editorial`'s
+`keepInside`), `src/framing/solver.ts` (`enforceKeepInside`, unchanged —
+the existing mechanism already worked correctly once given the right
+anchor name).
 
-**Files**: `src/vision/analysis/shot-type.ts:46` (`ANCHOR_FLOOR`),
-`src/framing/types.ts:270–322` (`full_body_editorial` preset, both
-strategies' `minConfidence`), `src/framing/solver.ts` (`selectStrategy`,
-`enforceKeepInside`).
-
-**Fix plan**: align the thresholds (raise `ANCHOR_FLOOR` for feet/ankle
-specifically to 0.35, or lower the strategy's `minConfidence` to 0.25 — a
-judgment call on which direction is actually correct, worth deciding with
-real fixture data rather than arbitrarily), **or**, more robustly: have
-`keepInside` apply before strategy selection narrows the anchor set, so a
-feet anchor that exists with *any* nonzero confidence still gets protected
-from being cropped out even if it wasn't confident enough to anchor the
-strategy itself. The second option is more defensive and doesn't risk
-quietly changing classification behavior elsewhere `ANCHOR_FLOOR` is used.
-
-**Acceptance test**: a full-body fixture photo whose feet-anchor confidence
-is known to sit in the 0.25–0.35 gap must render with the garment's full
-visible length preserved, not cropped at the knee.
+**Tests**: `tests/framing/solver.test.ts` — one test reproducing the
+ORIGINAL hypothesis to document why it doesn't hold (feet already
+protected), one reproducing the REAL gap and confirming the fix (ankle
+no longer cropped out when feet is absent).
 
 ---
 
