@@ -318,7 +318,7 @@ function SimpleFraming({
       <div className="space-y-3 border-t border-[var(--color-border)] pt-4">
         <ShotTypePicker
           value={primary.shotTypes}
-          onChange={shotTypes => updatePrimary({ shotTypes })}
+          onChange={shotTypes => updatePrimary(withFlatLayDefaults(primary, shotTypes))}
           hint={
             isBackupRule
               ? `Applies to the "${primary.label}" rule, the one framing this photo. Leave empty to allow any shot type.`
@@ -365,6 +365,35 @@ function SimpleFraming({
  * Advanced shows one per rule; Simple shows the one for the rule currently
  * framing the preview.
  */
+
+/**
+ * A flat-lay/ghost-mannequin shot has no head or feet keypoint to frame
+ * against — a rule still pointed at `head_top`/`feet` (every new rule's
+ * starting anchors, see `addStrategy`) can never activate for one. Confirmed
+ * against a real template (docs/ISSUES.md issue 11's workaround): a
+ * `subject_top` vertical anchor with a plain subject-height scale — which
+ * depend only on the segmentation box, never on a skeleton — is what
+ * actually frames these consistently. Auto-filled the moment "Flat lay" is
+ * newly selected, so a rule built for it doesn't silently inherit anchors
+ * that shot type will never have, the exact trap the "Product Only" rule in
+ * issue 12's follow-up fell into (requires stuck at `head_top` with no way
+ * to see or clear it).
+ */
+function withFlatLayDefaults(
+  strategy: FramingStrategy,
+  nextShotTypes: ShotType[]
+): Partial<FramingStrategy> {
+  const newlySelectedFlatLay =
+    nextShotTypes.includes('flat_lay') && !strategy.shotTypes.includes('flat_lay')
+  if (!newlySelectedFlatLay) return { shotTypes: nextShotTypes }
+  return {
+    shotTypes: nextShotTypes,
+    vertical: { anchor: 'subject_top', targetPct: 8.5 },
+    scale: { mode: 'subject', heightPct: 80 },
+    horizontal: { anchor: 'subject_center', targetPct: 50 },
+  }
+}
+
 function ShotTypePicker({
   value,
   onChange,
@@ -747,7 +776,9 @@ function AdvancedFraming({
                   <div className="space-y-2 border-t border-[var(--color-border)] pt-3">
                     <ShotTypePicker
                       value={strategy.shotTypes}
-                      onChange={shotTypes => updateStrategy(index, { shotTypes })}
+                      onChange={shotTypes =>
+                        updateStrategy(index, withFlatLayDefaults(strategy, shotTypes))
+                      }
                       hint="Leave empty to allow any. Useful when a rule only makes sense for full-body shots."
                     />
 
