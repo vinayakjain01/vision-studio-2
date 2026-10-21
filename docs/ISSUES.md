@@ -35,60 +35,44 @@ reading image files that no longer exist on disk, all for one tenant — see
 
 ## Issue 1 — Half-face images converted to full-face
 
-**Status: Strong hypothesis, split across two layers.**
+**Status: Fixed** (code and tests; this status line was stale until
+2026-10-21 — the fix below was committed but the write-up never got
+updated to match. Caught only when directly asked whether this issue was
+resolved and re-checked against git history rather than trusted as-is).
 
-`src/vision/analysis/shot-type.ts` already has a deliberate, documented
-defense against this exact bug: `headVisible` (computed at lines 266–287)
-requires a real face detection or a pose keypoint clearing
-`HEAD_KEYPOINT_FLOOR = 0.7` (line 110), and explicitly excludes
-out-of-frame/extrapolated keypoints via `inFrame()` (lines 334–340,
-with a documented example of a keypoint extrapolated to y = -67). So
-**classification** of a half-face photo should correctly land on
-`product_only`/`unknown`, not a shot type implying a full head.
+Root cause had two layers. **Classification** was already correct:
+`src/vision/analysis/shot-type.ts`'s `headVisible` requires a real face
+detection or a pose keypoint clearing `HEAD_KEYPOINT_FLOOR = 0.7`, and
+explicitly excludes out-of-frame/extrapolated keypoints via `inFrame()`.
+The real gap was one layer down, in the **framing solver**:
+`src/vision/analysis/anchors.ts`'s `estimateHead` still produces a
+`head_top` anchor whenever a person is detected at all (its person-box-
+proportions fallback), independent of whether `headVisible` said the
+head is actually trustworthy — and `src/framing/solver.ts`'s `hasAnchor`/
+`enforceKeepInside` only ever checked confidence, so a cropped-but-
+confidently-detected partial face (a real, if incomplete,
+`face_landmarks` hit) could carry high confidence despite being
+extrapolated above the frame (`head_top.y < 0`).
 
-The gap is one layer down: `src/vision/analysis/anchors.ts`'s `estimateHead`
-still produces a `head_top` anchor **whenever a person is detected at all**
-(its fallback #3, person-box proportions, lines 253–270), independent of
-whether `headVisible` said the head is actually trustworthy.
+**Fix** (commit `918b88e`): new `isAnchorTrustworthy()` in
+`src/framing/solver.ts` rejects a head-derived anchor (`head_top`,
+`eye_line`, `chin`) extrapolated above the frame, regardless of
+confidence. Used by both `hasAnchor` (a strategy requiring that anchor is
+now correctly skipped, same as if it were missing) and
+`enforceKeepInside` (the solver no longer zooms out trying to pull an
+above-frame head into view — the exact mechanism that was turning a
+half-face crop into a full-face one). Covered by
+`tests/framing/solver.test.ts`'s "a cropped head never gets forced into
+frame (issues 1/11)" suite: confirms the above-frame case correctly falls
+through to the anchor-free fallback, and confirms a same-position
+in-frame anchor is NOT over-rejected.
 
-**Confirmed** (checked directly, not just inferred): the solver's
-`selectStrategy` (`src/framing/solver.ts:178–236`) *does* already filter
-strategies by shot type (line 206:
-`if (strategy.shotTypes.length > 0 && !strategy.shotTypes.includes(subject.shotType)) …`),
-and `head_to_feet` is correctly restricted to `shotTypes: ['full_body']`
-(`src/framing/types.ts:291`) — so a photo correctly classified as anything
-*other* than `full_body` cannot reach that strategy at all. This is a real,
-working guard, not a gap.
-
-The actual remaining gap is one level more specific: `head_to_knees` is
-restricted to `shotTypes: ['full_body', 'three_quarter', 'half_body']`
-(`types.ts:300`) — and a `half_body` classification (torso + partial head
-visible, correctly classified by shot-type's own rules) can still carry an
-untrustworthy `head_top` anchor if the face itself is the part that's
-cropped, since `half_body` classification doesn't itself assert
-`headVisible`. `head_to_knees` uses `head_top` as its vertical anchor with
-no independent check of whether that specific anchor is trustworthy — only
-that the broader shot-type category is allowed to use this strategy at all.
-Shot-type filtering and per-anchor trustworthiness are two different,
-currently-independent checks, and only the first one exists today.
-
-**Files**: `src/vision/analysis/shot-type.ts` (`headVisible`, lines 266–340),
-`src/vision/analysis/anchors.ts` (`estimateHead`, lines 253–270),
-`src/framing/solver.ts:178–236` (`selectStrategy` — shot-type filter
-confirmed present; anchor-level trustworthiness filter confirmed absent).
-
-**Fix plan** (Phase 2/3): make `head_top` (and any other head-derived
-anchor) carry an explicit `cropped`/`untrustworthy` flag when `headVisible`
-is false, and have the solver's required-anchor check reject a flagged
-anchor the same way a missing one is rejected — falling through to the next
-strategy or the backup rule, which preserves original framing. This is
-exactly the "evidence-based anchors, `cropped` flag" mechanism the spec's
-Phase 2.2/2.4 already calls for.
-
-**Acceptance test**: a half-face fixture photo, run through the full
-pipeline, must land on the backup rule (or a strategy with no head
-requirement) and must not reposition/extend the crop toward where a full
-head would be.
+**Not yet confirmed against a real photo end-to-end** (no `LOCAL_ISSUE_DIR`
+fixture was ever provided for this issue specifically) — the fix is
+verified against the exact mechanism the bug report described, via
+synthetic anchors reproducing the documented failure (a `head_top`
+extrapolated to negative y), not via re-rendering the original reported
+photo.
 
 ---
 
