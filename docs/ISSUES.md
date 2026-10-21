@@ -612,6 +612,28 @@ using `product_only`/`flat_lay` shot types for anything else.
 `tests/jobs/worker-ai-extend-gate.test.ts` (7 tests) — both pure
 decision logic, no fixture needed.
 
+**Partially reverted (2026-10-21), with real evidence this time.** The
+`product_only` half of this gate turned out to cause a worse problem than
+it prevented, found via the user's own real render batch (17 hanger
+product photos, template `tpl_KEbdeKswkVEELlSb`): the vision engine
+misclassifies some of these as `half_body` (a shirt's collar/shoulders on
+a hanger scored a "person" at 0.79 keypoint confidence — a genuine false
+positive, not fixed here) and correctly classifies others `product_only`.
+The `half_body` ones got real AI Extend and came out clean — correct
+background, a hanger drawn in. The `product_only` ones, forced onto the
+edge-stretch by this gate, came out as a duplicated/ghosted pixel-stretch
+artifact — visibly worse than the tilted-hanger/seam problem the gate
+was built to prevent, on the exact kind of photo (hanger product shot)
+this issue is about.
+
+`AI_EXTEND_INELIGIBLE_SHOTS` now excludes only `flat_lay`; `product_only`
+is eligible for AI Extend again. The original decision was reasoned
+correctly from the code's structure but never confirmed against a real
+render batch — this is the same pattern as issue 2's disproven
+hypothesis: a well-reasoned fix that didn't survive contact with real
+data. Left `flat_lay` excluded since no real evidence exists either way
+for that shot type specifically; revisit if/when it does.
+
 ---
 
 ## Issue 8 — Direct image upload option
