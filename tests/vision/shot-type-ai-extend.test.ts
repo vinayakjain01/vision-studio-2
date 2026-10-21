@@ -9,9 +9,12 @@ import { SHOT_TYPES } from '@/vision/types'
  * meant for an on-model shot.
  */
 describe('eligibleForAiExtend', () => {
-  it('excludes exactly product_only and flat_lay — the two shot types issue 7\'s evidence is about', () => {
-    expect(eligibleForAiExtend('product_only')).toBe(false)
+  it('excludes flat_lay', () => {
     expect(eligibleForAiExtend('flat_lay')).toBe(false)
+  })
+
+  it('does NOT exclude product_only (reverted 2026-10-21): a real render batch showed AI Extend working fine on these, while the forced edge-stretch produced a worse duplicated-pixel artifact', () => {
+    expect(eligibleForAiExtend('product_only')).toBe(true)
   })
 
   it('does NOT exclude "detail" — a different no-person shot type where extending the backdrop can be exactly what is wanted', () => {
