@@ -305,20 +305,6 @@ export const FRAMING_PRESETS: Record<string, { name: string; description: string
           scale: { mode: 'span', from: 'head_top', to: 'feet', spanPct: 84 },
         },
         {
-          id: 'head_to_knees',
-          label: 'Head to knees',
-          requires: ['head_top', 'knee_center'],
-          minConfidence: 0.35,
-          // A real body shot missing only feet — not a close-up or product
-          // shot that happens to have stray anchors. Restricting this keeps the
-          // chain from being pressed into service on an incompatible photo; see
-          // `isShotTypeApplicable` in the solver.
-          shotTypes: ['full_body', 'three_quarter', 'half_body'],
-          vertical: { anchor: 'head_top', targetPct: 10 },
-          horizontal: { anchor: 'subject_center', targetPct: 50 },
-          scale: { mode: 'span', from: 'head_top', to: 'knee_center', spanPct: 72 },
-        },
-        {
           id: 'subject_fit',
           label: 'Fit subject',
           requires: [],

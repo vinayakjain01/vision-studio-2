@@ -59,22 +59,25 @@ describe('isAnchorTrustworthy (pure decision logic)', () => {
 })
 
 describe('solveFraming: a cropped head never gets forced into frame (issues 1/11)', () => {
-  it('rejects head_to_knees when head_top is extrapolated above the frame, even with high confidence, falling through to the anchor-free fallback', () => {
-    const half_body = subject(
+  it('rejects head_to_feet when head_top is extrapolated above the frame, even with high confidence, falling through to the anchor-free fallback', () => {
+    // `full_body_editorial`'s chain is head_to_feet -> subject_fit (Phase
+    // 2/3, docs/ISSUES.md issue 12's "remove head to knees" request: the
+    // middle head_to_knees strategy was removed from the shared default
+    // preset).
+    const full_body = subject(
       {
         head_top: anchor(600, -120, 0.7, 'face_landmarks'), // confidently detected, but cropped — the half-face case
-        knee_center: anchor(600, 1100, 0.8),
+        feet: anchor(600, 1550, 0.9),
         subject_center: anchor(600, 800, 0.9, 'person_mask'),
       },
-      'half_body'
+      'full_body'
     )
 
-    const result = solveFraming(half_body, FRAMING_PRESETS.full_body_editorial.spec, CANVAS)
+    const result = solveFraming(full_body, FRAMING_PRESETS.full_body_editorial.spec, CANVAS)
 
-    // head_to_knees requires head_top+knee_center at minConfidence 0.35 —
-    // both would pass a confidence-only check, so landing on subject_fit
-    // proves the trustworthiness filter, not a confidence gap, is what
-    // rejected it.
+    // head_to_feet requires head_top+feet at minConfidence 0.35 — both would
+    // pass a confidence-only check, so landing on subject_fit proves the
+    // trustworthiness filter, not a confidence gap, is what rejected it.
     expect(result.strategyId).toBe('subject_fit')
     expect(result.usedFallback).toBe(true)
 
@@ -84,7 +87,28 @@ describe('solveFraming: a cropped head never gets forced into frame (issues 1/11
     expect(keepInsideViolation).toBeUndefined()
   })
 
-  it('DOES use head_to_knees when the same anchors are trustworthy (within frame) — confirms the fix does not over-reject', () => {
+  it('DOES use head_to_feet when the same anchors are trustworthy (within frame) — confirms the fix does not over-reject', () => {
+    const full_body = subject(
+      {
+        head_top: anchor(600, 80, 0.7, 'face_landmarks'),
+        feet: anchor(600, 1550, 0.9),
+        subject_center: anchor(600, 800, 0.9, 'person_mask'),
+      },
+      'full_body'
+    )
+
+    const result = solveFraming(full_body, FRAMING_PRESETS.full_body_editorial.spec, CANVAS)
+
+    expect(result.strategyId).toBe('head_to_feet')
+    expect(result.usedFallback).toBe(false)
+  })
+
+  it('a half_body shot with no head_to_knees strategy left in the chain falls straight to the anchor-free fallback', () => {
+    // Phase 2/3 (docs/ISSUES.md issue 12): the user asked to remove
+    // "Head to knees" from the shared default preset. half_body/
+    // three_quarter shots no longer have a dedicated strategy in
+    // full_body_editorial — head_to_feet is full_body-only — so they land
+    // on subject_fit by design, not as a bug.
     const half_body = subject(
       {
         head_top: anchor(600, 80, 0.7, 'face_landmarks'),
@@ -96,11 +120,7 @@ describe('solveFraming: a cropped head never gets forced into frame (issues 1/11
 
     const result = solveFraming(half_body, FRAMING_PRESETS.full_body_editorial.spec, CANVAS)
 
-    // head_to_feet (index 0) is correctly skipped on a half_body shot (its
-    // shotTypes is ['full_body'] only) — landing on head_to_knees here is
-    // the chain's own by-design degradation, not evidence of a problem;
-    // `usedFallback` just means "not index 0", so it's true here regardless.
-    expect(result.strategyId).toBe('head_to_knees')
+    expect(result.strategyId).toBe('subject_fit')
     expect(result.usedFallback).toBe(true)
   })
 

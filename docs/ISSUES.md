@@ -1056,15 +1056,28 @@ partial-match case (shoulders+hips but no knees) that must still fall to
 confirm it's unaffected. Full suite (441 tests) and `tsc --noEmit` both
 clean.
 
-**Caching implication, not yet acted on**: `vision_analyses` rows are
-cached by `(source_hash, engineVersion)`
-(`src/vision/model-registry.ts`'s `ENGINE_VERSION`). This classification
-fix does **not** retroactively change the 3 already-affected photos in the
-user's own "test" template — or any other already-analyzed photo across
-any tenant — until either `ENGINE_VERSION` is bumped (forces a global
-re-analysis on next run, a bigger and more consequential change affecting
-every tenant) or those specific photos are re-analyzed with `force: true`.
-Needs a decision from the user before either path is taken.
+**Caching implication, resolved**: `vision_analyses` rows are cached by
+`(source_hash, engineVersion)` (`src/vision/model-registry.ts`'s
+`ENGINE_VERSION`), so this classification fix does not retroactively
+change already-analyzed photos on its own. User chose to force
+re-analysis of all 42 photos in the "compressed-images" import (not just
+the 3 affected ones, nor a global `ENGINE_VERSION` bump affecting every
+tenant).
+
+**Second request from the same report, also done**: "remove that head to
+knees section by default" — the user confirmed this means the shared
+`full_body_editorial` preset (`src/framing/types.ts`), not just their own
+template's rule chain. Removed the `head_to_knees` strategy entirely from
+that preset's `strategies` array. Consequence, by design: `head_to_feet`
+is `full_body`-only, so `three_quarter`/`half_body` shots on this preset
+no longer have a dedicated head-relative strategy and land on the
+anchor-free `subject_fit` fallback (88% height, centered) instead of a
+head-targeted crop. This affects every template built from
+`full_body_editorial`, current and future — confirmed as the intended
+scope before changing it. `tests/framing/solver.test.ts`'s two
+`head_to_knees`-specific tests were rewritten against `head_to_feet`
+instead (same trustworthiness-filter behavior, still covered) and a new
+test added confirming `half_body` now falls straight to `subject_fit`.
 
 ---
 
