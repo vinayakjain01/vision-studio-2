@@ -35,7 +35,7 @@
  * machine, in the browser or on the server.
  */
 
-import type { AnchorName, Anchors, ShotType } from '@/vision/types'
+import type { Anchor, AnchorName, Anchors, ShotType } from '@/vision/types'
 import {
   DEFAULT_CONSTRAINTS,
   type AnchorPlacement,
@@ -245,9 +245,41 @@ function implicitAnchors(strategy: FramingStrategy): AnchorName[] {
   return names
 }
 
+/**
+ * Anchors whose derivation (`estimateHead` in `src/vision/analysis/
+ * anchors.ts`) extrapolates head geometry from whatever partial face/head
+ * evidence exists — a face box, eye/ear keypoints, or (weakest) the person
+ * box's own proportions. On a photo whose face is cropped by the frame edge,
+ * that extrapolation can place the crown ABOVE the image (`y < 0`): a guess
+ * at where a complete head WOULD be, not evidence of what the photo shows.
+ *
+ * `src/vision/analysis/quality.ts`'s `checkFraming` already detects exactly
+ * this (`head.y < 0` → the `head_cropped` warning) and its own message
+ * claims "templates anchored to the head will use their fallback" — but
+ * until now nothing downstream ever acted on it: `hasAnchor`/
+ * `enforceKeepInside` only ever checked confidence, and a cropped-but-
+ * confidently-detected partial face (a real, if incomplete, face_landmarks
+ * hit) can carry high confidence despite the extrapolation. This is issue
+ * 1's ("half-face becomes full-face") and issue 11's confirmed root cause:
+ * forcing an above-frame head anchor "into frame" (`enforceKeepInside`) is
+ * precisely what zooms out / invites AI-Extend padding to fabricate the
+ * rest of a face the source photo never showed.
+ */
+const HEAD_DERIVED_ANCHORS: ReadonlySet<AnchorName> = new Set(['head_top', 'eye_line', 'chin'])
+
+/**
+ * True unless this is a head-derived anchor extrapolated above the frame
+ * (see `HEAD_DERIVED_ANCHORS`'s doc comment). Exported for direct testing —
+ * see tests/framing/solver.test.ts — the same reasoning `isJobHung`/
+ * `isPoolStalled` in src/jobs/pool.ts already follow for pure decision logic.
+ */
+export function isAnchorTrustworthy(name: AnchorName, anchor: Anchor): boolean {
+  return !(HEAD_DERIVED_ANCHORS.has(name) && anchor.y < 0)
+}
+
 function hasAnchor(anchors: Anchors, name: AnchorName, minConfidence: number): boolean {
   const anchor = anchors[name]
-  return !!anchor && anchor.confidence >= minConfidence
+  return !!anchor && anchor.confidence >= minConfidence && isAnchorTrustworthy(name, anchor)
 }
 
 /**
@@ -392,8 +424,9 @@ function enforceKeepInside(
 
   const points = constraints.keepInside
     .map(name => ({ name, anchor: subject.anchors[name] }))
-    .filter((entry): entry is { name: AnchorName; anchor: NonNullable<Anchors[AnchorName]> } =>
-      entry.anchor != null
+    .filter(
+      (entry): entry is { name: AnchorName; anchor: NonNullable<Anchors[AnchorName]> } =>
+        entry.anchor != null && isAnchorTrustworthy(entry.name, entry.anchor)
     )
 
   if (points.length === 0) return crop
