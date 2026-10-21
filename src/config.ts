@@ -352,6 +352,24 @@ export const config = {
     exportSlotWaitMs: int(process.env.EXPORT_SLOT_WAIT_MS, 2_000),
     /** How many files a single bulk ZIP converts at once, INSIDE whatever global/per-tenant slots it can get — small on purpose, see the download route's own doc comment. */
     zipInternalConcurrency: int(process.env.ZIP_INTERNAL_CONCURRENCY, 3),
+    /**
+     * Phase 2/3 (docs/ISSUES.md issue 9 — WebP download 502 Bad Gateway).
+     * `encodeWithinSizeBudget` (src/render/export-image.ts) binary-searches
+     * quality 1-100 for the highest value that still fits a size budget —
+     * naturally bounded at ~7 sequential full-resolution encodes to fully
+     * converge. WebP encoding is markedly more CPU-expensive than JPEG at
+     * comparable settings on large studio photos, and several of those
+     * encodes back to back — especially layered under the bulk ZIP route's
+     * own `zipInternalConcurrency` — can run long enough to exceed nginx's
+     * `proxy_read_timeout` while the process is alive and busy, producing a
+     * 502 with no app-level error ever generated. Capped lower for WebP
+     * specifically; JPEG's own per-encode cost isn't the reported problem,
+     * so it keeps its natural ~7-iteration convergence. A narrower search
+     * still lands within roughly 100 / 2^N quality levels of the ideal —
+     * a bounded, deliberate precision tradeoff against an unbounded
+     * wall-clock cost.
+     */
+    webpSizeBudgetMaxIterations: int(process.env.WEBP_SIZE_BUDGET_MAX_ITERATIONS, 4),
   },
 
   cloudinary: {

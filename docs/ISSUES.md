@@ -698,6 +698,33 @@ request behind a longer timeout.
 completes within a bounded time (measured, not assumed) under concurrent
 load matching the bulk-ZIP scenario, with no 502.
 
+**Status: Fixed (fix plan item 1).** `encodeWithinSizeBudget`'s binary
+search is now capped at `config.render.webpSizeBudgetMaxIterations`
+(default 4, new `WEBP_SIZE_BUDGET_MAX_ITERATIONS` env var) for WebP
+specifically — JPEG keeps its natural ~7-iteration convergence
+unchanged, since JPEG's own per-encode cost was never the reported
+problem. A narrower search still lands within roughly 100/2^4 ≈ 6
+quality levels of the ideal, a bounded, deliberate precision tradeoff
+against the previously-unbounded wall-clock cost. This halves the
+worst-case number of full-resolution WebP encodes per export (from 8
+down to 5: the quality=1 floor plus up to 4 search iterations instead
+of up to 7), which directly bounds the contributor to a 502 that this
+issue's own evidence and code-structure analysis identified.
+
+**Tests**: `tests/render/webp-size-budget.test.ts` (4 tests) spy on
+real `sharp.prototype.webp`/`jpeg` calls — not just the loop's own
+internal logic — to verify the actual number of encodes stays within
+the cap under a budget tight enough to force a full search, that JPEG's
+own cap is unaffected, and that a capped (not fully converged) search
+still returns a valid, correctly-formatted image.
+
+**Not done**: raising nginx's `proxy_read_timeout` for export routes
+(fix plan item 2) — an operational/infrastructure change outside this
+codebase, left as an operator-side backstop recommendation rather than
+something to implement here. The real fix (bounding worst-case encode
+cost) is the one that matters; a longer timeout alone would only hide a
+slow request for longer, not fix it.
+
 ---
 
 ## Issue 10 — Tool hangs and gets stuck

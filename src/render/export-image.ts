@@ -87,8 +87,17 @@ export function withExtension(fileName: string, extension: string): string {
  * no reason to leave headroom under `maxBytes` once something fits under it.
  * `minBytes` only matters for the caller's expectations (see the doc comment
  * on `targetSizeKb`) — it is never used to reject or pad a result here.
+ *
+ * Phase 2/3 (docs/ISSUES.md issue 9 — WebP download 502 Bad Gateway): the
+ * search is capped at `config.render.webpSizeBudgetMaxIterations` for WebP
+ * specifically — see that config entry's own doc comment for why. JPEG
+ * keeps its natural ~7-iteration convergence (the cap there is set above
+ * what the loop's own `low <= high` condition would ever need, so it never
+ * actually triggers — JPEG's own per-encode cost isn't the reported
+ * problem).
  */
-async function encodeWithinSizeBudget(
+/** Exported for direct testing — see tests/render/webp-size-budget.test.ts. */
+export async function encodeWithinSizeBudget(
   pipeline: ReturnType<typeof sharp>,
   format: 'jpeg' | 'webp',
   maxBytes: number
@@ -98,6 +107,8 @@ async function encodeWithinSizeBudget(
       ? pipeline.clone().webp({ quality }).toBuffer()
       : pipeline.clone().jpeg({ quality }).toBuffer()
 
+  const maxIterations = format === 'webp' ? config.render.webpSizeBudgetMaxIterations : 7
+
   let low = 1
   let high = 100
   // The floor: whatever quality=1 produces is the smallest this image can get
@@ -106,7 +117,9 @@ async function encodeWithinSizeBudget(
   // for would be a worse surprise than oversized output they can see.
   let best = await encodeAt(1)
 
-  while (low <= high) {
+  let iterations = 0
+  while (low <= high && iterations < maxIterations) {
+    iterations++
     const mid = Math.floor((low + high) / 2)
     const attempt = await encodeAt(mid)
     if (attempt.length <= maxBytes) {
