@@ -190,11 +190,28 @@ export function classifyShot(ctx: ShotContext): ShotClassification {
   }
 
   if (signals.anklesVisible && !signals.headVisible) {
-    // Legs and feet but no head — a hem-and-shoes crop. `product_only`, not
-    // `three_quarter`: the old answer said in its own reasoning that
-    // head-relative framing would not apply, while returning a type that
-    // `HEAD_FRAMEABLE_SHOTS` lists as head-frameable, so the framing it
-    // warned about was applied anyway.
+    // A genuine lower-body-only crop (a hem-and-shoes shot that starts
+    // somewhere around the thigh) has ankles visible and nothing above the
+    // hip. A back-facing full-length photo — hair covering any head
+    // keypoint, no face toward the camera — has ankles visible TOO, but
+    // also shoulders, hips and knees: the whole figure is in frame, the
+    // camera just isn't seeing a head. Confirmed against real catalog data,
+    // not assumed: two photos with shoulders/hips/knees/ankles ALL visible
+    // and personHeightRatio ~0.95 were classified `product_only` under the
+    // single ankles-without-head check, while two genuine product-only
+    // shots in the same batch had every one of those signals false. The
+    // combined signal (not just ankles) is what tells the two apart.
+    if (signals.shouldersVisible && signals.hipsVisible && signals.kneesVisible) {
+      return decide(
+        'full_body',
+        0.7,
+        'Shoulders through ankles are all visible but no face or head keypoint was detected — likely a back-facing shot. Still a full figure in frame, just without head evidence, so head-relative framing will still correctly skip to a fallback.'
+      )
+    }
+    // `product_only`, not `three_quarter`: the old answer said in its own
+    // reasoning that head-relative framing would not apply, while returning
+    // a type that `HEAD_FRAMEABLE_SHOTS` lists as head-frameable, so the
+    // framing it warned about was applied anyway.
     return decide(
       'product_only',
       0.75,

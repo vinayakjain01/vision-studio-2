@@ -1020,6 +1020,54 @@ base.
 
 ---
 
+## Issue 12 — Back-facing full-body shots misclassified `product_only` (reported 2026-10-21)
+
+**Status: Fixed and verified against real catalog data.** Reported by the
+user against their own real "test" template (tenant `tnt_YLUuygPCT0J72tRx`,
+42-photo "compressed-images" import), via screenshots showing two
+full-length back-view photos — hair covering the head, no face toward the
+camera — landing on "Product only (backup rule)" with a warning that the
+template's full/half-body rule would not apply.
+
+**Root cause, confirmed against the real data, not assumed**: queried the
+tenant's own `vision_analyses` table directly for the two named photos
+(source hashes `bb1a1732f939ae5f19707…b36bad9` and
+`18e1d164785c03324d385…1bf067`) and for all 42 photos in the batch
+(`{"full_body":31,"half_body":6,"product_only":5}`). Of the 5
+`product_only` results, 3 — including the two reported — had
+`shoulders/hips/knees/ankles` ALL visible with `personHeightRatio` ~0.95–
+0.96: a full figure in frame, just photographed from behind, so no face or
+head keypoint resolved. The other 2 had every one of those signals `false`
+(`personHeightRatio: 0`) — genuinely no person detected, correctly
+`product_only`. `classifyShot`'s `anklesVisible && !headVisible` branch
+(`src/vision/analysis/shot-type.ts`) tested only ankles-without-head and
+could not tell these two cases apart.
+
+**Fix**: within that branch, when `shouldersVisible && hipsVisible &&
+kneesVisible` are also all true, classify `full_body` (confidence 0.7)
+instead of falling through to `product_only` — the combined signal is what
+separates a genuine lower-body-only crop (ankles visible, nothing above the
+hip) from a back-facing full-length shot (the whole figure in frame, just
+no head evidence). Verified with a synthetic regression suite
+(`tests/vision/shot-type-back-facing.test.ts`, 4 tests) covering: the new
+back-facing case, the genuine lower-body-crop case it must not swallow, a
+partial-match case (shoulders+hips but no knees) that must still fall to
+`product_only`, and the pre-existing head+ankles `full_body` path to
+confirm it's unaffected. Full suite (441 tests) and `tsc --noEmit` both
+clean.
+
+**Caching implication, not yet acted on**: `vision_analyses` rows are
+cached by `(source_hash, engineVersion)`
+(`src/vision/model-registry.ts`'s `ENGINE_VERSION`). This classification
+fix does **not** retroactively change the 3 already-affected photos in the
+user's own "test" template — or any other already-analyzed photo across
+any tenant — until either `ENGINE_VERSION` is bumped (forces a global
+re-analysis on next run, a bigger and more consequential change affecting
+every tenant) or those specific photos are re-analyzed with `force: true`.
+Needs a decision from the user before either path is taken.
+
+---
+
 ## Phase 4 feature scope note
 
 **Correction to the original framing of this feature**: per-strategy
