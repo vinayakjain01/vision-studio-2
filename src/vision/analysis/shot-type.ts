@@ -308,6 +308,7 @@ function computeSignals(ctx: ShotContext): ShotSignals {
 
   const box = ctx.subjectBox
   const edgeTolerance = Math.max(2, Math.round(Math.min(ctx.imageWidth, ctx.imageHeight) * 0.01))
+  const touchesTop = box ? box.top <= edgeTolerance : false
 
   return {
     hasPerson: ctx.person !== null,
@@ -321,7 +322,21 @@ function computeSignals(ctx: ShotContext): ShotSignals {
     // back-facing shot in the catalog — 77 of 544 photos here have no face
     // detection, and many are simply models photographed from behind, whose
     // ears and hair the pose model still resolves.
-    headVisible: ctx.face !== null || headKeypointSeen,
+    //
+    // The keypoint path is further gated by `!touchesTop`: a keypoint-only
+    // "head" on a subject that touches the top of the frame is a head
+    // genuinely cropped off by the shot, not a model facing away. Confirmed
+    // against a real catalog photo (DSC08870.jpg): no face detected, but a
+    // head keypoint cleared the floor, `personHeightRatio` ~1.00 and the
+    // subject box touching BOTH the top and bottom edges — the head is cut
+    // off at the frame's top, not turned from the camera. The user wanted
+    // this treated the same as a neckline-down crop (`product_only`), not
+    // `half_body`. Checked against every other keypoint-only-head photo in
+    // the same catalog (17 total): this was the only one touching the top
+    // edge — every genuine back-facing full-body/half-body shot has the
+    // whole head comfortably inside the frame, so this gate doesn't touch
+    // them.
+    headVisible: ctx.face !== null || (headKeypointSeen && !touchesTop),
     shouldersVisible: has('shoulder_center') || has('shoulder_left') || has('shoulder_right'),
     hipsVisible: has('hip_center'),
     kneesVisible: has('knee_center'),
@@ -341,7 +356,7 @@ function computeSignals(ctx: ShotContext): ShotSignals {
     personCoverage: ctx.personCoverage,
     subjectAspect:
       box && box.right - box.left > 0 ? (box.bottom - box.top) / (box.right - box.left) : 0,
-    touchesTop: box ? box.top <= edgeTolerance : false,
+    touchesTop,
     touchesBottom: box ? box.bottom >= ctx.imageHeight - edgeTolerance : false,
     touchesLeft: box ? box.left <= edgeTolerance : false,
     touchesRight: box ? box.right >= ctx.imageWidth - edgeTolerance : false,

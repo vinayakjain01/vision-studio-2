@@ -1164,6 +1164,54 @@ flagged directly — all investigated against the real data, not guessed:
 
 ---
 
+## Issue 13 — Head cropped off at top of frame still classified `half_body` (reported 2026-10-22)
+
+**Status: Fixed and verified against real catalog data.** User flagged a
+real photo (DSC08870.jpg) that should be `product_only` — no usable face
+or head in the shot — but classified `half_body`. Confirmed directly
+against the real `vision_analyses` payload: `hasFace: false`, but
+`headVisible: true` — the keypoint path (see Issue 12's `headVisible` doc
+comment, deliberately OR'd with face detection so a back-facing model
+still counts) had fired on a head keypoint even though no actual face was
+visible. The subject's `personHeightRatio` was ~1.00 with the box
+touching BOTH the top and bottom edges of the frame: the head is cropped
+off at the top of the shot, not turned away from the camera.
+
+Checked before fixing, not assumed: queried every photo in the tenant's
+catalog with the same "headVisible via keypoint only, no face" signature
+(17 real photos). DSC08870.jpg was the **only** one touching the top
+edge — every genuine back-facing full-body/half-body shot in the same
+batch had the whole head comfortably inside the frame. `touchesTop` is
+exactly the signal that tells a cropped head apart from a turned-away
+one, and it doesn't touch any of the other 16 (which include several
+real back-facing full-body mannequin/model shots this engine needs to
+keep classifying correctly).
+
+**Fix**: `headVisible`'s keypoint path in `computeSignals`
+(`src/vision/analysis/shot-type.ts`) now also requires `!touchesTop` —
+`ctx.face !== null || (headKeypointSeen && !touchesTop)`. A real face
+detection still counts regardless of `touchesTop` (a detected face flush
+against the top edge is still a real, visible face); the gate only
+applies to the keypoint-only path. Covered by 4 new tests in
+`tests/vision/shot-type-cropped-head.test.ts`: the cropped-head case
+(now `product_only`), the same keypoint-only head NOT touching the top
+edge (still `half_body`, confirming no over-rejection), a real face
+detection touching the top edge (still counts, confirming the gate is
+keypoint-path-only), and issue 12's no-head-evidence-at-all path
+(confirmed unaffected). Full suite (450 tests) and `tsc --noEmit` both
+clean.
+
+**Separately noted during this investigation, not fixed here**: the same
+hanger product shots from issue 7's `product_only` AI-Extend reversal
+(`Red.png`, `Teal-Blue 2.png`, etc.) also show `headVisible: true,
+hasFace: false` — but `touchesTop: false` for all of them, so this fix
+does not touch them. Their `half_body` misclassification is the pose
+model hallucinating a head/torso onto a shirt collar on a hanger, a
+different root cause (a false-positive person detection, not a cropped
+real one) that isn't addressed by this fix.
+
+---
+
 ## Phase 4 feature scope note
 
 **Correction to the original framing of this feature**: per-strategy
