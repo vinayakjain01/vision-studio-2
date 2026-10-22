@@ -204,6 +204,35 @@ No step here ever runs `tenants:migrate-legacy` — that command only exists
 for the one-time legacy transition and must never be part of a routine
 update.
 
+### Update procedure — PM2 / bare-metal (the actual production deployment)
+
+The droplet this app currently runs on (`ubuntu-s-4vcpu-8gb-blr1`, 4 vCPU /
+8 GB) does not use the Docker path above — it's a plain PM2-managed
+process, app checked out directly under `/opt/apps/vision-studio-2`, PM2
+app name `vision-studio`. The job pool's worker processes are children
+`pool.ts` spawns itself at runtime (on demand, when work is enqueued) —
+PM2 only ever tracks the one top-level process.
+
+1. `git pull origin <branch>` — whichever branch this deployment actually
+   tracks (confirm with `git branch --show-current`; it has been
+   `multi-tenancy` here, not `main`).
+2. `npm ci`.
+3. **Stop the app before building — do not build while it's running.**
+   `pm2 stop vision-studio` first. Confirmed the hard way (2026-10-22):
+   `next build` was OOM-killed outright on this box while the running app's
+   workers were still resident (together using most of the 8 GB, this box
+   also has heavy swap usage under normal load — see `free -h`). Stopping
+   first frees that memory and the same build that failed completes
+   cleanly in well under a minute.
+4. `NODE_ENV=production npm run build`.
+5. `pm2 start vision-studio` (or `restart`, if it was left registered)
+   — this also respawns fresh worker processes the next time work is
+   enqueued, clearing out any long-lived worker that had been running
+   since the previous deploy.
+6. Confirm `curl http://127.0.0.1:3000/api/health` returns
+   `{"status":"ok"}` from the box itself, and that the public URL answers
+   too, before considering the update complete.
+
 ---
 
 ## `ALLOW_MULTI_TENANT_PREVIEW`
