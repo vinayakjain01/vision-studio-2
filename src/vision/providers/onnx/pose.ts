@@ -45,6 +45,48 @@ export interface PoseOptions {
   maxDetections?: number
 }
 
+/**
+ * Below the normal box-score threshold, a person detection is still trusted
+ * if enough of its face/shoulder keypoints are overwhelmingly confident on
+ * their own. The box classifier and the per-keypoint pose estimator score
+ * the same real person quite differently — a confidently resolved face and
+ * shoulders are not invalidated by one aggregate number having scored low.
+ *
+ * Measured against two real catalog photos, not assumed. A genuine mirror
+ * selfie (unusual pose, phone held up, partial view) scored a person box at
+ * 0.267 — below the 0.35 default — while its nose, both eyes and both
+ * shoulders all scored 0.94-0.99. Thrown away entirely, it classified as a
+ * no-person `flat_lay`. A garment-only hanger shot that should NOT count as
+ * a person scored a box at 0.21 with nose 0.28 and both eyes under 0.12 — no
+ * keypoint anywhere near the floor below. The two cases are nowhere close to
+ * each other, which is what lets one conservative floor (0.8, well above
+ * both the genuine case's weakest member and the phantom's strongest)
+ * separate them without more data forcing a choice between them.
+ *
+ * Requiring four of five, not all five, tolerates one occluded or
+ * foreshortened keypoint (a sleeve over a shoulder seam, a face turned
+ * enough to lose one eye) without opening the door to a single
+ * coincidentally-high score standing in on its own.
+ */
+const PERSON_RESCUE_KEYPOINTS: (keyof Keypoints)[] = [
+  'nose',
+  'left_eye',
+  'right_eye',
+  'left_shoulder',
+  'right_shoulder',
+]
+const PERSON_RESCUE_KEYPOINT_FLOOR = 0.8
+const PERSON_RESCUE_MIN_KEYPOINTS = 4
+/**
+ * Pre-filter floor for the anchor loop below, low enough that a rescue
+ * candidate's keypoints still get decoded (both real cases above clear it
+ * with room to spare) while still skipping full keypoint decoding — 17
+ * points, each needing an unletterbox transform — for the overwhelming
+ * majority of the 8400 anchors a real image produces, which score near zero
+ * and are true background.
+ */
+const PERSON_RESCUE_PREFILTER = 0.15
+
 export async function runPose(
   loaded: LoadedSession,
   image: DecodedImage,
@@ -99,7 +141,11 @@ export function decodePose(
 
   for (let a = 0; a < numAnchors; a++) {
     const score = out[4 * numAnchors + a]
-    if (score < options.scoreThreshold) continue
+    // Full rejection stays cheap for the vast majority of anchors; only one
+    // below the real threshold but above the rescue pre-filter pays for
+    // decoding its keypoints, to find out whether PERSON_RESCUE below admits
+    // it anyway.
+    if (score < Math.min(options.scoreThreshold, PERSON_RESCUE_PREFILTER)) continue
 
     const cx = out[0 * numAnchors + a]
     const cy = out[1 * numAnchors + a]
@@ -152,6 +198,17 @@ export function decodePose(
         visibleCount++
         keypointScores.push(ks)
       }
+    }
+
+    if (score < options.scoreThreshold) {
+      // Below the real threshold: only kept if PERSON_RESCUE's own doc
+      // comment's condition holds — otherwise this was just decoded for
+      // nothing, which is the price of checking at all.
+      const strongCount = PERSON_RESCUE_KEYPOINTS.reduce(
+        (count, name) => (keypoints[name].score >= PERSON_RESCUE_KEYPOINT_FLOOR ? count + 1 : count),
+        0
+      )
+      if (strongCount < PERSON_RESCUE_MIN_KEYPOINTS) continue
     }
 
     candidates.push({ box: sourceBox, score, keypoints, keypointScores, visibleCount })

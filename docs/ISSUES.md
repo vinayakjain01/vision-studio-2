@@ -1307,6 +1307,68 @@ tests) and `tsc --noEmit` clean.
 
 ---
 
+## Issue 15 — Real person detected as "no person" (flat_lay), AI Extend never ran (reported 2026-10-23)
+
+**Status: Fixed, scoped and verified against two real photos, not a
+global threshold change.** User reported a garbled, kaleidoscope-looking
+render — a mirror selfie whose background (closet doors, patterned
+wallpaper) came out repeated and distorted. Traced the real chain, not
+assumed: the photo (`tnt_23I1IzoPWV_dr5WB`, a WhatsApp-shared mirror
+selfie) never reached Cloudinary at all. `hasPerson: false` classified it
+`flat_lay` ("No person detected... a garment laid flat or on a ghost
+mannequin"); `flat_lay` is on `AI_EXTEND_INELIGIBLE_SHOTS`, so the
+template's `ai_extend` mode was correctly-by-its-own-logic downgraded to
+`edge_extend` (issue 7); the photo needed padding on all four sides
+against a busy, patterned real-world background, and stretching the
+visible pixels to cover that produced the garbled result. Not a
+generative-fill bug — generative fill never ran.
+
+**Root cause, confirmed with the real model, not assumed**: downloaded
+the real photo and ran the actual pose-detection engine directly with
+its score threshold lowered to see raw candidates. A real person box
+WAS found — nose 0.986, both eyes 0.94–0.98, both shoulders 0.95–0.99 —
+but the aggregate person-box confidence was only 0.267, below the 0.35
+default, so the whole detection (keypoints included) was discarded
+before classification ever saw it.
+
+**Why not just lower `VISION_PERSON_SCORE_THRESHOLD`**: a different real
+photo investigated earlier this session (a shirt on a hanger, no person
+in it) produces a phantom person candidate at a similar box score (0.21)
+with its best keypoints under 0.3 — lowering the global threshold enough
+to admit the genuine selfie risks admitting that phantom too, trading one
+bug for another across every tenant's catalog, not just this one. User
+confirmed: build a scoped fix using the real evidence rather than a
+blanket threshold change.
+
+**Fix**: `decodePose` (`src/vision/providers/onnx/pose.ts`) now rescues a
+below-threshold candidate when at least 4 of 5 face/shoulder keypoints
+(nose, both eyes, both shoulders) independently clear a 0.8 floor — a
+bar chosen from the two real reference points, comfortably above the
+genuine selfie's weakest member (0.943) and comfortably above the
+hanger-phantom's strongest (0.278), with real margin on both sides. A
+cheap pre-filter (0.15) keeps full keypoint decoding — 17 points per
+anchor, 8400 anchors per image — from running on the overwhelming
+majority of true-background anchors that never had a chance anyway; only
+candidates between the pre-filter and the real threshold pay for the
+extra check. 5 new tests in `tests/vision/pose-rescue.test.ts` cover: the
+real selfie signature (admitted), the real hanger-phantom signature
+(still rejected), a 3-of-5-strong case (not enough, rejected), a normal
+above-threshold candidate (unaffected either way), and a near-zero-score
+anchor with synthetic high keypoints (rejected outright by the
+pre-filter, confirming the cheap path still works). Verified end-to-end
+against the real photo at the real default threshold (no env override):
+reclassifies from `flat_lay` to `three_quarter`, correctly eligible for
+AI Extend again. Full suite (470 tests) and `tsc --noEmit` clean.
+
+**Honest limit**: this is a scoped rescue for a specific, well-evidenced
+failure shape (strong face/shoulder keypoints, weak aggregate box score),
+not a general fix for every way a person can go undetected. A photo
+where the face is also genuinely unclear (motion blur, extreme angle,
+turned away with no keypoints resolved at all) is unaffected — correctly,
+since there is no real evidence to rescue it with in that case.
+
+---
+
 ## Phase 4 feature scope note
 
 **Correction to the original framing of this feature**: per-strategy
