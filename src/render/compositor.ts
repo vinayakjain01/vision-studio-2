@@ -747,6 +747,44 @@ export function hasOverflow(overflow: FramingResult['overflow']): boolean {
 }
 
 /**
+ * True when EVERY edge that actually needs padding borders garment fabric —
+ * never backdrop or skin. User-reported (2026-10-23, real photo: a
+ * floor-length velvet kaftan, `hemCropped: true`, hem at the source image's
+ * exact bottom edge): `classifyPaddingEdges` correctly classified the
+ * overflowing bottom edge `garment`, and `buildFillPrompt` correctly appended
+ * its "continue this exact fabric... do not generate skin, limbs, or any
+ * other body part" clause — confirmed against the real masks and the real
+ * solver output, not assumed. Cloudinary's generative model still sometimes
+ * drew legs there anyway. That is a probabilistic failure of the generative
+ * step itself, not a classification or prompt-construction bug, and no
+ * amount of further prompt tuning can turn "usually obeys this instruction"
+ * into "never doesn't" — the model is free to ignore it.
+ *
+ * When this is true there is a strictly safer and cheaper alternative
+ * available: `edge_extend` stretches the photo's OWN real pixels into the
+ * gap. It can never invent a body part because it never invents anything —
+ * every pixel it draws already existed in the source photo. For a
+ * garment-only overflow (typically small, a hem needing a bit more room, not
+ * a blank studio backdrop that only a generative model could plausibly
+ * continue) this is a strict improvement: a guarantee instead of a
+ * probability, at zero Cloudinary cost. A MIXED case (some edges garment,
+ * some genuine backdrop) is deliberately left alone — downgrading those
+ * would lose the real, working backdrop generation on the non-garment edges
+ * to avoid a risk that only exists on the garment ones.
+ */
+export function isGarmentOnlyOverflow(overflow: FramingResult['overflow'], edgeContent: EdgeContent): boolean {
+  const edges: Array<[keyof EdgeContent, number]> = [
+    ['top', overflow.top],
+    ['left', overflow.left],
+    ['right', overflow.right],
+    ['bottom', overflow.bottom],
+  ]
+  const overflowing = edges.filter(([, amount]) => amount > 0.5)
+  if (overflowing.length === 0) return false
+  return overflowing.every(([edge]) => edgeContent[edge] === 'garment')
+}
+
+/**
  * Reads the garment and person masks the vision engine already persisted for
  * this photo (see `boundary-classify.ts` for why these two, and not a new
  * detector) and classifies what touches each padding edge.
