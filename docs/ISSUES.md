@@ -1367,6 +1367,26 @@ where the face is also genuinely unclear (motion blur, extreme angle,
 turned away with no keypoints resolved at all) is unaffected — correctly,
 since there is no real evidence to rescue it with in that case.
 
+**Follow-up, same day: `flat_lay` removed from the AI-Extend gate too, by
+explicit user request.** `AI_EXTEND_INELIGIBLE_SHOTS` (issue 7) originally
+excluded both `product_only` and `flat_lay`; `product_only` was already
+reverted (above) once real evidence showed AI Extend working correctly on
+it. The user asked for `flat_lay` to get the same treatment, on the same
+reasoning: the original issue 7 evidence behind excluding either shot type
+was never fixture-confirmed, and this investigation's own root cause (a
+real person-shot photo landing in `flat_lay` at all) was a classification
+bug now fixed above, not a reason to keep a second shot type walled off
+from AI Extend on unconfirmed evidence. `AI_EXTEND_INELIGIBLE_SHOTS` is
+now `[]` — kept as a named export, not deleted, since `eligibleForAiExtend`
+and both call sites in `src/jobs/worker.ts` still read it, and it is where
+a shot type goes back if real evidence ever justifies excluding one again.
+Updated `tests/vision/shot-type-ai-extend.test.ts` and
+`tests/jobs/worker-ai-extend-gate.test.ts` — the latter's
+`flat_lay`-specific downgrade tests were rewritten, since there is
+currently no real `ShotType` left that triggers the downgrade branch at
+all (asserting one would mean asserting behavior the function can no
+longer produce). Full suite (468 tests) and `tsc --noEmit` clean.
+
 ---
 
 ## Phase 4 feature scope note

@@ -409,33 +409,37 @@ export function supportsHeadFraming(type: ShotType): boolean {
 }
 
 /**
- * Shot types with no model in frame at all — a garment laid flat/on a ghost
- * mannequin. Phase 2/3 (docs/ISSUES.md issue 7 — "hanger tilted or line
- * above it in no-model shots"): AI Extend was previously never gated by shot
- * type, so one of these assigned to an on-model template with
- * `overflow: 'allow'` got generative-fill padding exactly like a person shot
- * — paying for a Cloudinary call AND inheriting `compositor.ts`'s own
- * documented, still-unresolved photo/generated-pad compositing seam, on a
- * photo with no person to even justify extending a studio backdrop around.
+ * Shot types this list once excluded from AI Extend entirely — a garment
+ * laid flat/on a ghost mannequin, or an isolated product shot. Phase 2/3
+ * (docs/ISSUES.md issue 7 — "hanger tilted or line above it in no-model
+ * shots"): AI Extend was previously never gated by shot type at all, so one
+ * of these assigned to an on-model template with `overflow: 'allow'` got
+ * generative-fill padding exactly like a person shot, paying for a
+ * Cloudinary call and risking `compositor.ts`'s own documented photo/
+ * generated-pad compositing seam on a photo with no person to even justify
+ * extending a studio backdrop around.
  *
- * `product_only` was REMOVED from this list (2026-10-21) once real evidence
- * contradicted the original fix: a user's actual render batch of hanger
- * product shots showed AI Extend producing a clean background and a
- * correctly-drawn hanger on the photos it was allowed to run on, while the
- * `product_only`-classified photos in the SAME batch — forced onto the cheap
- * edge-stretch instead — showed a duplicated/ghosted pixel-stretch artifact,
- * a worse result than the seam this gate was meant to prevent. The original
- * issue 7 evidence was thin (tracker screenshots, never fixture-confirmed);
- * this is a real batch. `flat_lay` stays excluded — no real evidence yet
- * either way for that shot type specifically.
+ * `product_only` was removed (2026-10-21) once a real render batch showed
+ * the opposite: AI Extend produced a clean background and a correctly-drawn
+ * hanger on the photos it was allowed to run on, while the ones forced onto
+ * the cheap edge-stretch instead showed a worse, duplicated/ghosted pixel
+ * artifact than the seam this gate was meant to prevent.
  *
- * Deliberately narrower than "no person detected" — `detail` (a fabric/
- * hardware/texture close-up) is also excluded from this list for the same
- * original reason: extending the backdrop around an extreme close-up can be
- * exactly what's wanted. See `src/jobs/worker.ts`'s `handleRenderJob`/
- * `handleBackgroundFillJob`, the two call sites that check this.
+ * `flat_lay` was removed (2026-10-23) on the same reasoning, by explicit
+ * user request, after a related investigation (issue 15) found a REAL
+ * person-shot photo had been wrongly landing in `flat_lay` — the original
+ * issue 7 evidence behind excluding `flat_lay` at all was never
+ * fixture-confirmed either, same as `product_only`'s turned out not to
+ * hold up.
+ *
+ * Now empty, kept as a named export rather than deleted: it is the one
+ * place `eligibleForAiExtend`'s shot-type gate lives, and the two call
+ * sites in `src/jobs/worker.ts` (`handleRenderJob`/
+ * `handleBackgroundFillJob`) read it rather than assuming every shot type
+ * is eligible — if real evidence ever justifies excluding one again, this
+ * is where it goes back.
  */
-export const AI_EXTEND_INELIGIBLE_SHOTS: ShotType[] = ['flat_lay']
+export const AI_EXTEND_INELIGIBLE_SHOTS: ShotType[] = []
 
 export function eligibleForAiExtend(type: ShotType): boolean {
   return !AI_EXTEND_INELIGIBLE_SHOTS.includes(type)

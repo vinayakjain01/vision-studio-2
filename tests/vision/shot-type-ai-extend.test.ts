@@ -4,13 +4,17 @@ import { SHOT_TYPES } from '@/vision/types'
 
 /**
  * Phase 2/3 (docs/ISSUES.md issue 7 — "hanger tilted or line above it in
- * no-model shots"): eligibleForAiExtend is the shot-type gate that stops a
- * hanger/flat-lay/product-only photo from getting generative-fill padding
- * meant for an on-model shot.
+ * no-model shots"): eligibleForAiExtend is the shot-type gate that was built
+ * to stop a hanger/flat-lay/product-only photo from getting generative-fill
+ * padding meant for an on-model shot. Both shot types it originally excluded
+ * were later removed once real evidence contradicted the original fix —
+ * `product_only` on 2026-10-21, `flat_lay` on 2026-10-23 — leaving the list
+ * empty. The gate itself stays in the codebase (not deleted) as the one
+ * place to re-add a shot type if real evidence ever justifies it again.
  */
 describe('eligibleForAiExtend', () => {
-  it('excludes flat_lay', () => {
-    expect(eligibleForAiExtend('flat_lay')).toBe(false)
+  it('does NOT exclude flat_lay (reverted 2026-10-23): same reasoning as product_only, by explicit user request', () => {
+    expect(eligibleForAiExtend('flat_lay')).toBe(true)
   })
 
   it('does NOT exclude product_only (reverted 2026-10-21): a real render batch showed AI Extend working fine on these, while the forced edge-stretch produced a worse duplicated-pixel artifact', () => {
@@ -21,9 +25,9 @@ describe('eligibleForAiExtend', () => {
     expect(eligibleForAiExtend('detail')).toBe(true)
   })
 
-  it('every on-model shot type remains eligible', () => {
+  it('every shot type is currently eligible — AI_EXTEND_INELIGIBLE_SHOTS is empty', () => {
+    expect(AI_EXTEND_INELIGIBLE_SHOTS).toEqual([])
     for (const type of SHOT_TYPES) {
-      if (AI_EXTEND_INELIGIBLE_SHOTS.includes(type)) continue
       expect(eligibleForAiExtend(type)).toBe(true)
     }
   })
