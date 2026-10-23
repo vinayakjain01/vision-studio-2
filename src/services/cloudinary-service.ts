@@ -164,7 +164,49 @@ function joinEdgeNames(names: string[]): string {
  * the base/default prompt only ever said "continue backdrop floor lighting
  * and shadow", with nothing telling it WHERE the feet are.
  */
-export function buildFillPrompt(basePrompt: string | undefined, edges: EdgeContent, groundFeet = false): string {
+/**
+ * `garmentOnly` (docs/ISSUES.md issue 14 follow-up, 2026-10-23): true when
+ * EVERY edge needing padding borders garment fabric and none border
+ * backdrop or skin — `isGarmentOnlyOverflow` in `src/render/compositor.ts`
+ * is the one place that computes it, passed through by the caller so this
+ * function never has to re-derive it from `edges` itself.
+ *
+ * The combined base-prompt-plus-exception structure below ("continue the
+ * backdrop... except at this edge, continue the garment instead") is the
+ * right shape for the common case, where part of the padding genuinely is
+ * empty backdrop. It is the WRONG shape when the entire region is garment:
+ * telling the model to "continue the backdrop" at all, even as a base that
+ * gets overridden, hands it two different and partly contradictory
+ * instructions for the same pixels. A garment-only region gets its own
+ * prompt instead — no backdrop language anywhere in it — on the theory that
+ * a model told to do exactly one thing follows it more reliably than one
+ * told to do one thing "except" in a region that is actually the whole
+ * canvas. Verified against the real masks/solver output for the real photo
+ * that prompted this (a floor-length kaftan whose hem is cut by the source
+ * image's own bottom edge) — `isGarmentOnlyOverflow` returns true for
+ * exactly this case. Not a guaranteed fix: this is still a generative
+ * model, which can ignore any prompt. It is the strongest version of "ask
+ * it correctly" available without giving up on generation entirely (see
+ * `isGarmentOnlyOverflow`'s own doc comment for the deterministic
+ * alternative, `edge_extend`, which IS a guarantee).
+ */
+export function buildFillPrompt(
+  basePrompt: string | undefined,
+  edges: EdgeContent,
+  groundFeet = false,
+  garmentOnly = false
+): string {
+  if (garmentOnly) {
+    return (
+      'this entire padded region is a direct physical continuation of the visible garment fabric at its edge ' +
+      'continue the exact same fabric its embroidery sequins pattern colour texture and natural drape exactly as ' +
+      'it already appears as though the garment itself simply extends beyond where the photograph was cropped ' +
+      'there is no person body skin limb hand foot or any human body part anywhere in this region do not ' +
+      'generate any of those under any circumstance do not generate a hem cuff or any edge or ending of the ' +
+      'garment here either the fabric must read as continuing past the frame not concluding within it'
+    )
+  }
+
   const base = basePrompt?.trim() || DEFAULT_PROMPT
 
   const garmentEdges = (Object.keys(EDGE_NAME) as (keyof typeof EDGE_NAME)[]).filter(

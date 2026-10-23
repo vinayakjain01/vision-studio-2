@@ -58,4 +58,56 @@ describe('buildFillPrompt', () => {
     const withGrounding = buildFillPrompt('backdrop', NO_EDGES, true)
     expect(without).not.toBe(withGrounding)
   })
+
+  /**
+   * Phase 2/3 (docs/ISSUES.md issue 14 follow-up, 2026-10-23): user
+   * explicitly chose to keep spending a real Cloudinary credit on a
+   * garment-only overflow (for the better pattern/embroidery/drape match
+   * generation can produce) rather than the deterministic edge_extend
+   * fallback, provided the prompt is as strong as possible against
+   * generating a body part. `garmentOnly` replaces the base prompt entirely
+   * rather than appending to it — no "continue the backdrop" language
+   * anywhere, since there is no backdrop in this case at all.
+   */
+  describe('garmentOnly', () => {
+    it('ignores the base/template prompt entirely and never mentions backdrop', () => {
+      const prompt = buildFillPrompt('a sunlit marble backdrop', { ...NO_EDGES, bottom: 'garment' }, false, true)
+      expect(prompt).not.toContain('backdrop')
+      expect(prompt).not.toContain('marble')
+    })
+
+    it('explicitly rules out every kind of body part, not just skin and limbs', () => {
+      const prompt = buildFillPrompt(undefined, { ...NO_EDGES, bottom: 'garment' }, false, true)
+      expect(prompt).toContain('person')
+      expect(prompt).toContain('body')
+      expect(prompt).toContain('skin')
+      expect(prompt).toContain('limb')
+      expect(prompt).toContain('hand')
+      expect(prompt).toContain('foot')
+    })
+
+    it('asks for the pattern, embroidery and drape to continue, not just plain fabric', () => {
+      const prompt = buildFillPrompt(undefined, { ...NO_EDGES, bottom: 'garment' }, false, true)
+      expect(prompt).toContain('embroidery')
+      expect(prompt).toContain('pattern')
+      expect(prompt).toContain('drape')
+    })
+
+    it('contains no punctuation sanitizePrompt would otherwise strip', () => {
+      const prompt = buildFillPrompt(undefined, { ...NO_EDGES, bottom: 'garment' }, false, true)
+      expect(prompt).not.toMatch(/[,;:/|.()[\]{}]/)
+    })
+
+    it('produces a different prompt string than the non-garmentOnly path for the same edges — a different AI-Extend cache entry', () => {
+      const edges: EdgeContent = { ...NO_EDGES, bottom: 'garment' }
+      const normal = buildFillPrompt('backdrop', edges, false, false)
+      const garmentOnly = buildFillPrompt('backdrop', edges, false, true)
+      expect(normal).not.toBe(garmentOnly)
+    })
+
+    it('ignores groundFeet when garmentOnly is true — there is no floor to ground against in an all-garment region', () => {
+      const prompt = buildFillPrompt(undefined, { ...NO_EDGES, bottom: 'garment' }, true, true)
+      expect(prompt).not.toContain('contact shadow')
+    })
+  })
 })

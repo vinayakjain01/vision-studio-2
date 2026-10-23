@@ -1275,6 +1275,36 @@ multiple all-garment edges, an unclassified (null) edge, and a
 non-overflowing edge's classification being correctly ignored. Full suite
 and `tsc --noEmit` clean.
 
+**Follow-up, same day: user explicitly chose generative fill over the
+deterministic fallback.** After seeing the `edge_extend` result (a plain
+stretch of the real pixels — correct, but visually just a stretch, not a
+pattern/embroidery/drape match), the user asked specifically to keep
+calling Cloudinary and spending a credit here, with the strongest possible
+instruction against generating a body part, rather than falling back to
+the guarantee. `isGarmentOnlyOverflow` is no longer used to skip the
+generative call — both `handleRenderJob` and `handleBackgroundFillJob`
+always go through Cloudinary when there is overflow. Instead, `
+buildFillPrompt` (`src/services/cloudinary-service.ts`) takes a new
+`garmentOnly` parameter: when true, it replaces the base prompt entirely
+with a dedicated, backdrop-free instruction (continue the exact fabric,
+embroidery, sequins, pattern, drape — explicitly naming person, body,
+skin, limb, hand and foot as things never to generate), rather than the
+normal "continue the backdrop... except at this edge, continue the
+garment instead" structure, which for an all-garment region was asking
+the model to do two different, partly contradictory things for the same
+pixels. 6 new tests in `tests/services/cloudinary-fill-prompt.test.ts`
+cover the new parameter: no backdrop language leaks through, every kind
+of body part is explicitly named, pattern/embroidery/drape are requested,
+no stripped punctuation, a different (and therefore differently cached)
+prompt string than the normal path, and `groundFeet` correctly ignored
+(there is no floor to ground against in an all-garment region). Honest
+limit, unchanged from the first fix: this is still a generative model,
+and no prompt — however carefully worded — can turn "usually obeys this
+instruction" into "never doesn't". `isGarmentOnlyOverflow` and
+`edge_extend` remain in the codebase as the deterministic alternative, not
+removed, should this decision ever need revisiting. Full suite (465
+tests) and `tsc --noEmit` clean.
+
 ---
 
 ## Phase 4 feature scope note

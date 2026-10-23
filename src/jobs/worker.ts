@@ -195,10 +195,8 @@ export async function handleRenderJob(
   // Phase 2/3 (docs/ISSUES.md issue 7 — "hanger tilted or line above it in
   // no-model shots"): see `resolveEffectiveBackground`'s own doc comment.
   // Everything below reads `effectiveBackground`, never the template's own
-  // `background`, directly. Mutable: the garment-only-overflow check below
-  // can downgrade it a second time, after `resolveEffectiveBackground`'s own
-  // (cheap, shot-type-only) check has already run.
-  let effectiveBackground = resolveEffectiveBackground(
+  // `background`, directly.
+  const effectiveBackground = resolveEffectiveBackground(
     template.document.background,
     metadata?.shot.type
   )
@@ -213,21 +211,22 @@ export async function handleRenderJob(
   let precomputedBackground: Buffer | null = null
   if (effectiveBackground.mode === 'ai_extend') {
     const { overflow, edgeContent, groundFeet } = await computeAiExtendPlan(source, metadata, template.document)
-    if (hasOverflow(overflow) && isGarmentOnlyOverflow(overflow, edgeContent)) {
-      // See `isGarmentOnlyOverflow`'s own doc comment (docs/ISSUES.md: a
-      // floor-length garment whose hem is cut by the source photo's own
-      // bottom edge). Every edge needing padding here borders real garment
-      // fabric, not backdrop — stretching those real pixels (edge_extend)
-      // can never invent a body part, unlike a generative call that already
-      // correctly classifies this edge and still sometimes draws one anyway.
-      // No Cloudinary dependency is queued for this render at all.
-      effectiveBackground = { ...effectiveBackground, mode: 'edge_extend' }
-    } else if (hasOverflow(overflow)) {
+    if (hasOverflow(overflow)) {
+      // User decision (2026-10-23): use the real generative fill here too,
+      // not the deterministic edge_extend fallback — explicitly authorized
+      // spending a Cloudinary credit for the better pattern/embroidery/drape
+      // match generation can produce over a plain stretch. `garmentOnly`
+      // (see `isGarmentOnlyOverflow`'s doc comment) selects the dedicated,
+      // backdrop-free prompt `buildFillPrompt` builds for exactly this case
+      // — still not an absolute guarantee against a generative model
+      // ignoring an instruction, but the strongest version of "ask it
+      // correctly" available short of not generating at all.
+      const garmentOnly = isGarmentOnlyOverflow(overflow, edgeContent)
       // MUST be the same fully-composed prompt `handleBackgroundFillJob` uses
       // below — see `aiExtendCacheKind`'s doc comment. `computeAiExtendPlan`
       // is what guarantees `edgeContent`/`groundFeet` agree between the two
       // call sites.
-      const prompt = buildFillPrompt(template.document.background.backdropPrompt, edgeContent, groundFeet)
+      const prompt = buildFillPrompt(template.document.background.backdropPrompt, edgeContent, groundFeet, garmentOnly)
       const kind = aiExtendCacheKind(overflow, prompt)
       const key = derivedKey(sourceHash, kind, 'jpg')
 
@@ -448,17 +447,11 @@ export async function handleBackgroundFillJob(
     return { skipped: true, reason: 'no overflow to fill' }
   }
 
-  // Same check `handleRenderJob` makes before ever queuing this job — present
-  // here too because a job queued before a template/photo's masks were
-  // available can still reach this point independently. See
-  // `isGarmentOnlyOverflow`'s own doc comment.
-  if (isGarmentOnlyOverflow(target.overflow, target.edgeContent)) {
-    return { skipped: true, reason: 'overflow is garment-only; render uses edge_extend instead' }
-  }
-
   // Same composition `handleRenderJob`'s cache lookup uses — see
-  // `aiExtendCacheKind`'s doc comment for why the two must never diverge.
-  const prompt = buildFillPrompt(template.document.background.backdropPrompt, target.edgeContent, target.groundFeet)
+  // `aiExtendCacheKind`'s doc comment for why the two must never diverge,
+  // including `garmentOnly` (see `isGarmentOnlyOverflow`'s doc comment).
+  const garmentOnly = isGarmentOnlyOverflow(target.overflow, target.edgeContent)
+  const prompt = buildFillPrompt(template.document.background.backdropPrompt, target.edgeContent, target.groundFeet, garmentOnly)
   const kind = aiExtendCacheKind(target.overflow, prompt)
   const key = derivedKey(sourceHash, kind, 'jpg')
 
