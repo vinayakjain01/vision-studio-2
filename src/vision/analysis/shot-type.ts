@@ -201,7 +201,20 @@ export function classifyShot(ctx: ShotContext): ShotClassification {
     // single ankles-without-head check, while two genuine product-only
     // shots in the same batch had every one of those signals false. The
     // combined signal (not just ankles) is what tells the two apart.
-    if (signals.shouldersVisible && signals.hipsVisible && signals.kneesVisible) {
+    // `!signals.touchesTop` added 2026-10-23: a different tenant's catalog
+    // surfaced a photo with this exact signature (shoulders/hips/knees/
+    // ankles visible, no head evidence) that the reporting user confirmed
+    // should be `product_only`, not `full_body` — a tightly cropped product
+    // shot (personHeightRatio ~1.00, touching both the top AND bottom of the
+    // frame), not a back-facing portrait. Checked before fixing: every one
+    // of the original six real photos that justified this branch has
+    // `touchesTop: false` — the whole figure, hair included, sits with
+    // margin inside the frame, which is what a genuine back-facing portrait
+    // looks like. A subject touching the top edge has had its head/hair
+    // region cut off by the crop itself — the same reasoning already
+    // applied to the keypoint-evidence case in `headVisible` above, extended
+    // here to the no-head-evidence-at-all case for consistency.
+    if (signals.shouldersVisible && signals.hipsVisible && signals.kneesVisible && !signals.touchesTop) {
       return decide(
         'full_body',
         0.7,

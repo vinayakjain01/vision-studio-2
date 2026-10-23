@@ -205,4 +205,39 @@ describe('classifyShot — back-facing full body (ankles visible, no head eviden
     expect(result.signals.headVisible).toBe(true)
     expect(result.reasoning).toMatch(/Head and ankles/)
   })
+
+  it('classifies product_only, not full_body, when the same combined signal touches the top of the frame (a cropped product shot, not a back-facing portrait)', () => {
+    // Real case (2026-10-23, a different tenant's catalog): shoulders/hips/
+    // knees/ankles all visible, no head evidence, personHeightRatio ~1.00,
+    // subject touching both the top AND bottom of the frame — confirmed by
+    // the reporting user to be a tightly cropped product shot, not a model
+    // photographed from behind.
+    const keypoints = makeKeypoints({
+      left_knee: { x: 300, y: 1100, score: 0.8, visible: true },
+      right_knee: { x: 500, y: 1100, score: 0.8, visible: true },
+      left_ankle: { x: 300, y: 1400, score: 0.75, visible: true },
+      right_ankle: { x: 500, y: 1400, score: 0.75, visible: true },
+    })
+
+    const anchors: Anchors = {
+      shoulder_center: anchor(400, 200, 0.8),
+      hip_center: anchor(400, 800, 0.8),
+      knee_center: anchor(400, 1100, 0.8),
+      ankle_center: anchor(400, 1400, 0.75),
+      feet: anchor(400, 1460, 0.6),
+    }
+
+    const ctx = makeContext({
+      person: makePerson(keypoints),
+      face: null,
+      anchors,
+      personCoverage: 0.55,
+      subjectBox: { left: 100, top: 0, right: 700, bottom: 1500 }, // top === 0: touches top
+    })
+
+    const result = classifyShot(ctx)
+
+    expect(result.type).toBe('product_only')
+    expect(result.signals.touchesTop).toBe(true)
+  })
 })

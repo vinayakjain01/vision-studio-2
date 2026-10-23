@@ -148,7 +148,16 @@ describe('classifyShot — a keypoint-only head cropped off at the top of frame 
     expect(result.type).toBe('half_body')
   })
 
-  it('does not affect a shot with no head evidence at all, touching the top or not (issue 12 remains intact)', () => {
+  it('does not affect a genuine back-facing shot with no head evidence at all (issue 12 remains intact)', () => {
+    // `headVisible`'s `!touchesTop` gate (this fix) only applies to the
+    // keypoint-evidence path — it has nothing to say about a shot with NO
+    // head evidence of any kind, keypoint or face. That separate branch
+    // (issue 12) got its OWN `!touchesTop` gate later (2026-10-23, a
+    // different real tenant's photo) — see
+    // tests/vision/shot-type-back-facing.test.ts for that one specifically.
+    // This test keeps subjectBox comfortably inside the frame so it isn't
+    // exercising that second gate at all, only confirming this fix's own
+    // scope.
     const noHeadKeypoints = makeKeypoints()
     const ctx = makeContext({
       person: makePerson(noHeadKeypoints),
@@ -158,14 +167,13 @@ describe('classifyShot — a keypoint-only head cropped off at the top of frame 
         knee_center: anchor(400, 1100, 0.8),
         ankle_center: anchor(400, 1400, 0.75),
       },
-      subjectBox: { left: 100, top: 0, right: 700, bottom: 1490 },
+      subjectBox: { left: 100, top: 50, right: 700, bottom: 1490 },
     })
 
     const result = classifyShot(ctx)
 
-    // Shoulders+hips+knees+ankles all visible, no head evidence of any kind
-    // — issue 12's back-facing full_body path, unaffected by this fix.
     expect(result.type).toBe('full_body')
     expect(result.signals.headVisible).toBe(false)
+    expect(result.signals.touchesTop).toBe(false)
   })
 })

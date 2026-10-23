@@ -1210,6 +1210,71 @@ model hallucinating a head/torso onto a shirt collar on a hanger, a
 different root cause (a false-positive person detection, not a cropped
 real one) that isn't addressed by this fix.
 
+**Follow-up (2026-10-23): the same `touchesTop` gate was missing from
+issue 12's branch too.** A DIFFERENT real tenant (production,
+`tnt_Rl_m0y5QAv9vct-p`) reported a photo with issue 12's exact combined
+signature — shoulders/hips/knees/ankles all visible, no head evidence —
+classified `full_body`, where they confirmed it should be `product_only`:
+a tightly cropped product shot (`personHeightRatio` ~1.00, touching BOTH
+the top and bottom of the frame), not a back-facing portrait. Checked
+before fixing: queried every one of the six real photos in the ORIGINAL
+tenant's catalog that justified issue 12's branch — all six have
+`touchesTop: false`, none touch the top edge. Added the same
+`!signals.touchesTop` condition to that branch
+(`src/vision/analysis/shot-type.ts`), extending this issue's own
+reasoning rather than inventing a new one. New test in
+`tests/vision/shot-type-back-facing.test.ts` covers the touching-top
+case (now `product_only`); the existing non-touching case is unaffected
+(still `full_body`, all 6 real reference photos' own signature). Full
+suite and `tsc --noEmit` clean.
+
+---
+
+## Issue 14 — AI Extend drew legs instead of extending the garment (reported 2026-10-23)
+
+**Status: Fixed, with an honest limit on what a prompt alone can
+guarantee.** Reported against a real production photo (tenant
+`tnt_Rl_m0y5QAv9vct-p`, "AYAH VELVET KAFTAN - NAVY BLUE2.jpg" — a
+floor-length velvet kaftan whose hem is cut by the source photo's own
+bottom edge, `hemCropped: true`, `garment.box.bottom === image.height`
+exactly). The user: "it should not generate the legs, instead it should
+extend the garment only... if the last part is garment, it should
+strictly extend the garment only."
+
+**Verified against the real data before touching anything** — downloaded
+the real `garment_mask.png`/`person_mask.png` from production and ran the
+actual `solveFraming`/`classifyPaddingEdges` code locally against them
+(no fixture, no guess): the solver genuinely needs 534px of bottom
+padding (the template's "head to feet, 83% of height" strategy asks for
+more vertical room than this source photo has), and `classifyPaddingEdges`
+**correctly** classifies that edge `garment` — the classification and the
+existing `buildFillPrompt` garment-continuation clause (issue 5/7-adjacent
+work, already says "do not generate skin, limbs, or any other body part
+in that specific region") were both already working exactly as designed.
+Cloudinary's generative model still sometimes drew legs there anyway —
+a probabilistic failure of the generative step itself, not a
+classification or prompt bug. No amount of further prompt wording can
+turn "usually obeys this instruction" into "never doesn't."
+
+**Fix**: new `isGarmentOnlyOverflow` (`src/render/compositor.ts`) — true
+when EVERY edge that needs padding is classified `garment` (never
+background or skin). When true, `handleRenderJob`/`handleBackgroundFillJob`
+(`src/jobs/worker.ts`) now skip the generative call entirely and use
+`edge_extend` instead — stretching the photo's own real pixels into the
+gap. It can never invent a body part because it never invents anything;
+every pixel it draws already existed in the source. This is a strict
+improvement specifically for this case (a guarantee instead of a
+probability) at zero Cloudinary cost, and deliberately narrow: a MIXED
+case (some edges garment, some genuine backdrop) is left on the existing
+AI-Extend path, since downgrading those would lose real, working backdrop
+generation on the non-garment edges to avoid a risk that only exists on
+the garment ones. 8 new tests in `tests/render/garment-only-overflow.test.ts`
+cover the single-edge case, the no-overflow case, background/skin edges
+(must NOT trigger), a mixed garment+background case (must NOT trigger),
+multiple all-garment edges, an unclassified (null) edge, and a
+non-overflowing edge's classification being correctly ignored. Full suite
+and `tsc --noEmit` clean.
+
 ---
 
 ## Phase 4 feature scope note
