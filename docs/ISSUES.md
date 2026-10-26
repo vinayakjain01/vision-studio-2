@@ -1389,6 +1389,67 @@ longer produce). Full suite (468 tests) and `tsc --noEmit` clean.
 
 ---
 
+## Issue 16 — Products page "stuck" loading thumbnails (reported 2026-10-26)
+
+**Status: Fixed.** User: the Products grid and a product's photo strip
+feel stuck, unable to change page, while images load. Root cause,
+confirmed by reading the actual code rather than assumed: every
+thumbnail `<img>` in the app — the Products grid card and the 80x64
+photo-strip thumbnail — pointed directly at the ORIGINAL upload.
+Real catalog photos in this session have been as large as 5310x7434px,
+several megabytes each; rendering that at a few hundred CSS pixels still
+downloads the full file. Twenty grid cards on one page meant up to twenty
+multi-megabyte downloads before the page visually settled — pagination
+itself (a `setPage` state change) was never actually blocked, but the
+grid looked and felt stuck while thumbnails trickled in, which reads the
+same to a user either way.
+
+**Fix**: new `ensureThumbnail` (`src/storage/thumbnail.ts`) generates a
+640px-wide JPEG the first time a photo's thumbnail is requested and
+caches it as a derived asset in the SAME per-hash `derived/` directory
+that photo's masks already live in (originals are already content-hashed
+— `originalKey`'s own path IS the hash — so this reuses that addressing
+rather than inventing a second scheme). The media route
+(`src/app/api/media/[root]/[...key]/route.ts`) now accepts `?thumb=1` on
+an `originals` request, serving the cached thumbnail in its place with
+the exact same ETag/cache-control handling already written for every
+other content-addressed asset — not a separate code path, just a
+different effective root/key fed into it. `products/route.ts`'s
+`thumbnailUrl` and a new `thumbnailUrl` field on
+`products/[productId]/route.ts`'s per-image payload (the photo-strip
+thumbnail) now both request it.
+
+**Deliberately NOT touched**: `vision-debug-panel.tsx` still reads
+`originalUrl` directly, untouched — it overlays masks and landmark
+anchors for pixel-level QA, where the real resolution is the point, not
+a loading-speed concern. That's why the detail-page API response gained
+a NEW `thumbnailUrl` field alongside the existing `originalUrl`, rather
+than changing what `originalUrl` itself points to.
+
+**Tests**: `tests/storage/thumbnail.test.ts` (6 tests) covers
+`ensureThumbnail` directly — real generation and caching with a real
+synthetic JPEG, cache reuse on a second call (byte-identical result,
+same key), never enlarging a source already smaller than the thumbnail
+width, `null` for a non-`originals` root, `null` (never throws) for an
+undecodable file, and `null` for a key whose basename isn't a real
+content hash. `tests/isolation/media-thumbnail.test.ts` (6 tests) covers
+the route end to end: the thumbnail is dramatically smaller than the
+real original, still a valid correctly-oriented JPEG at the expected
+width, served with the same immutable cache-control as any other derived
+asset, a second request 304s against its own ETag, the full-original and
+thumbnail requests carry different ETags from each other, and an
+unauthenticated request is still rejected before any file access — same
+tenant-isolation guarantee the plain-original path already had, now
+confirmed for this one too. Full suite (480 tests), `tsc --noEmit`, and a
+full `next build` all clean.
+
+**Not done, flagged honestly**: this fixes thumbnail LOADING cost, not
+batch PROCESSING time (issue 4's own territory) — a slow vision/render
+backlog on a capacity-constrained box is unrelated and unaffected by this
+fix.
+
+---
+
 ## Phase 4 feature scope note
 
 **Correction to the original framing of this feature**: per-strategy

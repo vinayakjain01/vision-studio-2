@@ -43,6 +43,15 @@ export interface ProductImageDetail {
   visionStatus: string
   sourceHash: string
   originalUrl: string
+  /**
+   * A small cached JPEG (see `ensureThumbnail`), NOT `originalUrl` with a
+   * query string — the Vision Debug panel reads `originalUrl` directly for
+   * pixel-level landmark/mask overlay inspection, where the full-resolution
+   * original genuinely matters, so that field is left untouched. This one
+   * is for the 80x64 photo-strip thumbnail, which never needed more than a
+   * few hundred pixels to begin with.
+   */
+  thumbnailUrl: string
   assets: ReturnType<typeof getVisionAssetUrls>
   vision: VisionMetadata | null
   visionStale: boolean
@@ -85,6 +94,7 @@ export const GET = handler(
         visionStatus: image.visionStatus,
         sourceHash: image.sourceHash,
         originalUrl: mediaUrl('originals', image.storageKey),
+        thumbnailUrl: `${mediaUrl('originals', image.storageKey)}?thumb=1`,
         assets: getVisionAssetUrls(image.sourceHash),
         vision: metadata,
         visionStale: stale,

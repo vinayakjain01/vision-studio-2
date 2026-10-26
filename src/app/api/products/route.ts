@@ -58,7 +58,12 @@ export const GET = handler(async (request: NextRequest) => {
       shotType: analysis?.shot.type ?? null,
       garmentType: analysis?.garment.type ?? null,
       confidence: analysis?.quality.overall ?? null,
-      thumbnailUrl: primary ? mediaUrl('originals', primary.storageKey) : null,
+      // `?thumb=1`: the media route serves a small cached JPEG instead of
+      // the full original — see `ensureThumbnail`'s doc comment. This is a
+      // grid card a few hundred CSS pixels wide; downloading the full,
+      // often multi-megapixel upload for it is what made this page feel
+      // stuck while thumbnails trickled in.
+      thumbnailUrl: primary ? `${mediaUrl('originals', primary.storageKey)}?thumb=1` : null,
       createdAt: product.createdAt,
     }
   })

@@ -11,6 +11,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { statMedia, readMedia, type MediaRoot } from '@/storage/media-store'
+import { ensureThumbnail } from '@/storage/thumbnail'
 import { handler, badRequest, notFound } from '@/lib/api-handler'
 
 // Was the one route in the app missing this. The HTTP Cache-Control headers
@@ -47,9 +48,24 @@ export const GET = handler(
 
     const storageKey = key.map(decodeURIComponent).join('/')
 
+    // `?thumb=1` on an original: serve a small cached JPEG instead of the
+    // full upload. See `ensureThumbnail`'s own doc comment — it returns
+    // `null` (never throws) whenever thumbnailing isn't possible, and the
+    // the full original is served in that case exactly as before this
+    // param existed.
+    let effectiveRoot: MediaRoot = root as MediaRoot
+    let effectiveKey = storageKey
+    if (request.nextUrl.searchParams.get('thumb') === '1') {
+      const thumbKey = await ensureThumbnail(root as MediaRoot, storageKey)
+      if (thumbKey) {
+        effectiveRoot = 'derived'
+        effectiveKey = thumbKey
+      }
+    }
+
     let stat: Awaited<ReturnType<typeof statMedia>>
     try {
-      stat = await statMedia(root as MediaRoot, storageKey)
+      stat = await statMedia(effectiveRoot, effectiveKey)
     } catch {
       // resolvePath rejected the key as unsafe.
       return badRequest('invalid media key')
@@ -63,18 +79,22 @@ export const GET = handler(
       return new NextResponse(null, { status: 304, headers: { etag } })
     }
 
-    const extension = storageKey.split('.').pop()?.toLowerCase() ?? ''
-    const bytes = await readMedia(root as MediaRoot, storageKey)
+    const extension = effectiveKey.split('.').pop()?.toLowerCase() ?? ''
+    const bytes = await readMedia(effectiveRoot, effectiveKey)
 
     return new NextResponse(new Uint8Array(bytes), {
       headers: {
         'content-type': CONTENT_TYPES[extension] ?? 'application/octet-stream',
         'content-length': String(bytes.byteLength),
         etag,
-        // Originals and derived assets are content-addressed; creatives are
-        // rewritten on re-render, so they revalidate.
+        // Originals and derived assets (a thumbnail included) are
+        // content-addressed; creatives are rewritten on re-render, so they
+        // revalidate. A thumbnail's effective root is `derived` even when
+        // the request's own root was `originals`, which already reads
+        // `immutable` below — correct, since a thumbnail can never change
+        // once generated, exactly like the original it was built from.
         'cache-control':
-          root === 'creatives'
+          effectiveRoot === 'creatives'
             ? 'private, max-age=0, must-revalidate'
             : 'private, max-age=31536000, immutable',
       },

@@ -111,7 +111,7 @@ export function ProductDetailClient({ productId }: { productId: string }) {
                   : 'border-[var(--color-border)] hover:border-[var(--color-border-strong)]')
               }
             >
-              <img src={image.originalUrl} alt={image.fileName} className="h-full w-full object-cover" />
+              <img src={image.thumbnailUrl} alt={image.fileName} className="h-full w-full object-cover" />
               {image.visionStatus === 'processing' && (
                 <span className="absolute inset-0 grid place-items-center bg-black/50">
                   <Loader2 size={12} className="animate-spin text-[var(--color-accent)]" />
