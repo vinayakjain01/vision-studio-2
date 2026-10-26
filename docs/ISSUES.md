@@ -1471,6 +1471,57 @@ tested mechanism, not new logic of its own. Full suite (480 tests) and
 
 ---
 
+## Issue 17 — Downloads page: no master-folder structure (requested 2026-10-26)
+
+**Status: Done.** User: the Downloads (Creatives) page only had one flat
+"Download all" button — wanted the same master-folder/sub-folder
+structure the Products page already shows, with a dropdown to pick a
+master folder and a download that reproduces that structure as a ZIP
+(master folder / sub folder / original file name), the way a Products
+page per-folder download already does.
+
+**Found most of this already existed, just not wired up for this page.**
+`/api/creatives/download/route.ts` already had a `?layout=catalog` mode
+producing exactly `<product folder>/<original filename>.<ext>` — built
+earlier for the Generate page's bulk batch download — it just had no way
+to scope to one master folder independent of a specific batch, and the
+Downloads page never offered the choice at all.
+
+**Added**:
+- `creatives.listByImport`/`countByImport` (`src/db/repositories.ts`) —
+  every creative belonging to one import, regardless of which batch or
+  template produced it. `creatives` has no `import_id` of its own; this
+  joins through `products`, whose `import_id` is set once at import time,
+  the same relationship the download route's existing naming logic already
+  resolved per creative.
+- `/api/creatives/route.ts` (the gallery list) accepts `?importId=` — scoped,
+  unpaginated (the point is the whole folder, not a page of it) — and now
+  returns each creative's `folderPath` so the client can group by it.
+- `/api/creatives/download/route.ts` accepts `?importId=`, and treats it as
+  ALWAYS the catalog layout — no need to also remember `?layout=catalog`,
+  since scoping to one master folder only ever means "give me that folder's
+  structure back." Every creative `listByImport` returns already belongs to
+  the same import, so the existing `singleImportName`/`sawMultipleImports`
+  naming logic resolves the ZIP's own filename correctly unchanged.
+- `creatives-client.tsx`: a "Master folder" dropdown (same component/pattern
+  as the Products page's own), grouped sub-folder sections when a folder is
+  selected (matching exactly what that folder's ZIP will contain), and the
+  download button's label/href switch to the selected folder's scoped
+  download. No folder selected keeps today's existing flat "Download all"
+  behaviour completely unchanged.
+
+**Tests**: `tests/jobs/creatives-by-import.test.ts` (6 tests, extending the
+existing ZIP-download regression fixture pattern) — the list route returns
+only one import's creatives with correct `folderPath`s and never leaks a
+different import's; downloading by `importId` needs no explicit
+`?layout=catalog`; a creative with no batch at all is still included
+(proving this is NOT batch-scoped, unlike `listByBatch`); a different
+import's creative never appears; a second, independent import downloads
+correctly on its own. Full suite (486 tests), `tsc --noEmit`, and a full
+`next build` all clean.
+
+---
+
 ## Phase 4 feature scope note
 
 **Correction to the original framing of this feature**: per-strategy

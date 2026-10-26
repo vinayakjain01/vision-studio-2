@@ -1,25 +1,31 @@
 /**
  * Download creatives as a ZIP.
  *
- * Three naming behaviours:
+ * Four naming behaviours:
  *
- *  - `?productId=` alone (no `batchId`): a single folder's own download —
- *    original filenames, flat, ZIP named after the product ("KAF 100.zip").
- *    Unconditional, not gated on `?layout=`: there's exactly one product in
- *    play, so there's nothing for a caller to disambiguate by passing it.
- *    What the Products page's per-folder download link uses.
- *  - `?layout=catalog` (typically with `?batchId=`, spanning many products):
- *    `<product folder>/<original filename>.<ext>` - the source image's own
- *    import path with the import's own root folder stripped off (that name
- *    becomes the ZIP FILE's own filename instead, see below), nesting
- *    otherwise preserved. For the Generate page's bulk batch download,
- *    where the whole point is handing back a folder structure that matches
- *    the catalog as it was imported, not one that reveals anything about
- *    this app.
- *  - default (neither of the above): `<template>/<product>.<ext>` -
- *    filenames built from internal labels, grouped by template. The
- *    original behaviour, unchanged, still what "Download all" and the
- *    older per-batch links use.
+ *  - `?productId=` alone (no `batchId`, no `importId`): a single folder's own
+ *    download — original filenames, flat, ZIP named after the product
+ *    ("KAF 100.zip"). Unconditional, not gated on `?layout=`: there's
+ *    exactly one product in play, so there's nothing for a caller to
+ *    disambiguate by passing it. What the Products page's per-folder
+ *    download link uses.
+ *  - `?importId=`: every creative belonging to one master folder (see
+ *    `creatives.listByImport`), regardless of which batch or template
+ *    produced it. Always the catalog layout below, unconditionally — the
+ *    Downloads page's "pick a master folder, get that folder back" view.
+ *  - `?layout=catalog` (typically with `?batchId=`, spanning many products)
+ *    OR `?importId=` above: `<product folder>/<original filename>.<ext>` -
+ *    the source image's own import path with the import's own root folder
+ *    stripped off (that name becomes the ZIP FILE's own filename instead,
+ *    see below), nesting otherwise preserved. For the Generate page's bulk
+ *    batch download and the Downloads page's per-folder download, where the
+ *    whole point is handing back a folder structure that matches the
+ *    catalog as it was imported, not one that reveals anything about this
+ *    app.
+ *  - default (none of the above): `<template>/<product>.<ext>` - filenames
+ *    built from internal labels, grouped by template. The original
+ *    behaviour, unchanged, still what "Download all" (no folder selected)
+ *    uses.
  *
  * The catalog layout also names the downloaded ZIP FILE itself after the
  * import it came from ("Men Catalogue.zip"), not a batch label. Both halves
@@ -193,7 +199,15 @@ export const GET = handler(async (request: NextRequest) => {
   const params = request.nextUrl.searchParams
   const batchId = params.get('batchId')
   const productId = params.get('productId')
-  const catalogLayout = params.get('layout') === 'catalog'
+  const importId = params.get('importId')
+  // `?importId=` always means the catalog layout — the whole reason to scope
+  // a download to one master folder is to get back exactly that folder's
+  // structure, not something a caller has to additionally remember to ask
+  // for. Every creative `listByImport` returns belongs to the SAME import,
+  // so the existing `singleImportName`/`sawMultipleImports` bookkeeping
+  // below resolves to that one folder's name unchanged — this is a new
+  // SOURCE for `list`, not new naming logic.
+  const catalogLayout = params.get('layout') === 'catalog' || !!importId
   const exportOptions = parseExportOptions(params)
   const tenantId = currentTenant().tenantId
 
@@ -203,13 +217,15 @@ export const GET = handler(async (request: NextRequest) => {
   // one case that should behave this way regardless of whether the caller
   // remembered `?layout=catalog`: there is exactly one product in play, so
   // there's no ambiguity to ask the caller to resolve.
-  const productScoped = !!productId && !batchId
+  const productScoped = !!productId && !batchId && !importId
 
-  const list = batchId
-    ? creatives.listByBatch(batchId, 100000)
-    : productId
-      ? creatives.listByProduct(productId)
-      : creatives.list(100000, 0)
+  const list = importId
+    ? creatives.listByImport(importId)
+    : batchId
+      ? creatives.listByBatch(batchId, 100000)
+      : productId
+        ? creatives.listByProduct(productId)
+        : creatives.list(100000, 0)
 
   if (list.length === 0) return badRequest('there are no creatives to download')
 

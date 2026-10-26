@@ -1150,6 +1150,41 @@ export const creatives = {
       .map(toCreative)
   },
 
+  /**
+   * Every creative belonging to one master folder (import), regardless of
+   * which batch generated it or which template rendered it — the Downloads
+   * page's "pick a master folder" view. `creatives` has no `import_id` of
+   * its own; this joins through `products`, whose `import_id` is set once
+   * at import time and never changes, same relationship the download
+   * route's catalog-layout naming already resolves per creative via
+   * `products.get(creative.productId)` + `imports.get(product.importId)`.
+   * `c.*` keeps the result shape identical to every other query here, so
+   * `toCreative` needs no special case for the join.
+   */
+  listByImport(importId: string, limit = 100000): CreativeRecord[] {
+    return getDb()
+      .prepare(
+        `SELECT c.* FROM creatives c
+         JOIN products p ON p.id = c.product_id
+         WHERE p.import_id = ?
+         ORDER BY c.created_at DESC
+         LIMIT ?`
+      )
+      .all(importId, limit)
+      .map(toCreative)
+  },
+
+  countByImport(importId: string): number {
+    const row = getDb()
+      .prepare(
+        `SELECT COUNT(*) AS n FROM creatives c
+         JOIN products p ON p.id = c.product_id
+         WHERE p.import_id = ?`
+      )
+      .get(importId) as any
+    return row?.n ?? 0
+  },
+
   list(limit = 100, offset = 0): CreativeRecord[] {
     return getDb()
       .prepare('SELECT * FROM creatives ORDER BY created_at DESC LIMIT ? OFFSET ?')

@@ -13,8 +13,17 @@ export const GET = handler(async (request: NextRequest) => {
   const params = request.nextUrl.searchParams
   const limit = Math.min(200, Number(params.get('limit')) || 60)
   const offset = Math.max(0, Number(params.get('offset')) || 0)
+  const importId = params.get('importId')
 
-  const list = creatives.list(limit, offset)
+  // Scoped to one master folder: every creative in it regardless of which
+  // batch or template produced it, no offset pagination — the Downloads
+  // page's "pick a folder" view wants the whole folder's contents to group
+  // by sub-folder client-side, not a page of it. `importId` set means this
+  // request IS that view; the plain `limit`/`offset` path below is
+  // unaffected and keeps its existing behaviour for every other caller.
+  const list = importId ? creatives.listByImport(importId) : creatives.list(limit, offset)
+  const total = importId ? creatives.countByImport(importId) : creatives.count()
+
   const templateNames = new Map(templates.list().map(t => [t.id, t.name]))
 
   return ok({
@@ -24,6 +33,10 @@ export const GET = handler(async (request: NextRequest) => {
         id: creative.id,
         productId: creative.productId,
         productName: product?.name ?? '—',
+        // The sub-folder a product was imported under — "", not null, for a
+        // product imported at an import's own root — so the client can
+        // group by it directly without a null check on every item.
+        folderPath: product?.folderPath ?? '',
         imageId: creative.imageId,
         templateId: creative.templateId,
         templateName: templateNames.get(creative.templateId) ?? creative.templateId,
@@ -41,7 +54,7 @@ export const GET = handler(async (request: NextRequest) => {
         createdAt: creative.createdAt,
       }
     }),
-    total: creatives.count(),
-    hasMore: offset + list.length < creatives.count(),
+    total,
+    hasMore: importId ? false : offset + list.length < total,
   })
 })
