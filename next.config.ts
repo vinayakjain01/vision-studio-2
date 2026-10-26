@@ -11,6 +11,10 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
 
   experimental: {
+    // Keep getting nudged (and blocked, once genuinely affected) to upgrade
+    // past any published Next.js security advisory — explicit, rather than
+    // relying on whatever this version's own default happens to be.
+    agentUpgrade: 'security',
     serverActions: {
       // Folder upload streams originals through a server action / route handler.
       bodySizeLimit: '64mb',
