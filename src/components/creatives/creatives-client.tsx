@@ -3,7 +3,7 @@
 import * as React from 'react'
 import Link from 'next/link'
 import useSWR from 'swr'
-import { Download, FolderOpen, Sparkles } from 'lucide-react'
+import { Download, Sparkles } from 'lucide-react'
 import { fetcher } from '@/lib/api'
 import { DeleteButton } from '@/components/ui/delete-button'
 import { Badge, Button, EmptyState, Panel, Select, Tabs } from '@/components/ui/primitives'
@@ -185,28 +185,15 @@ export function CreativesClient() {
           />
         </Panel>
       ) : groups ? (
-        // A master folder is selected: grouped by sub-folder, matching the
-        // structure `?importId=` downloads as a ZIP — what's on screen is
-        // what you get.
-        <div className="space-y-6">
+        // A master folder is selected: one card per sub-folder, matching the
+        // Products page's own folder-card grid — not every individual image
+        // unfolded. Each card downloads exactly that sub-folder (the same
+        // `?productId=` structure `?importId=` downloads as a whole), and
+        // opens onto the product's own detail page to review the individual
+        // renders.
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
           {groups.map(([folder, creativesInFolder]) => (
-            <div key={folder} className="space-y-2">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--color-ink-subtle)]">
-                <FolderOpen size={13} />
-                {folder}
-                <span className="numeric font-normal">({creativesInFolder.length})</span>
-              </div>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-                {creativesInFolder.map(creative => (
-                  <CreativeCard
-                    key={creative.id}
-                    creative={creative}
-                    exportSuffix={exportSuffix}
-                    onDeleted={() => mutate()}
-                  />
-                ))}
-              </div>
-            </div>
+            <FolderCard key={folder} folder={folder} creatives={creativesInFolder} exportSuffix={exportSuffix} />
           ))}
         </div>
       ) : (
@@ -229,6 +216,64 @@ export function CreativesClient() {
           </Button>
         </div>
       )}
+    </div>
+  )
+}
+
+function FolderCard({
+  folder,
+  creatives,
+  exportSuffix,
+}: {
+  folder: string
+  creatives: Creative[]
+  exportSuffix: string
+}) {
+  const cover = creatives[0]
+  const needsReview = creatives.some(c => c.usedFallback || c.violations > 0)
+
+  const downloadParams = new URLSearchParams({ productId: cover.productId })
+  const exportParams = new URLSearchParams(exportSuffix.replace(/^\?/, ''))
+  for (const [key, value] of exportParams) downloadParams.set(key, value)
+
+  return (
+    <div className="panel group relative overflow-hidden transition-colors hover:border-[var(--color-border-strong)]">
+      {/* Outside the link: a nested control inside an anchor swallows its own clicks. */}
+      <div className="absolute right-1.5 top-1.5 z-10 rounded-md bg-black/65 opacity-0 backdrop-blur transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+        <a
+          href={`/api/creatives/download?${downloadParams}`}
+          className="flex h-7 w-7 items-center justify-center text-white transition-colors hover:text-[var(--color-accent)]"
+          aria-label={`Download "${cover.productName}"`}
+        >
+          <Download size={13} />
+        </a>
+      </div>
+
+      <Link href={`/products/${cover.productId}`} className="block">
+        <div className="relative aspect-[3/4] overflow-hidden bg-[var(--color-canvas)]">
+          <img
+            src={cover.url}
+            alt={cover.productName}
+            loading="lazy"
+            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+          />
+
+          <span className="numeric absolute left-1.5 top-1.5 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium">
+            {creatives.length}
+          </span>
+        </div>
+
+        <div className="space-y-1.5 px-2.5 py-2">
+          <p className="truncate text-xs font-medium leading-tight">{cover.productName}</p>
+          <p className="truncate text-[11px] text-[var(--color-ink-subtle)]">{folder}</p>
+
+          {needsReview && (
+            <div className="flex flex-wrap items-center gap-1">
+              <Badge tone="warning">needs review</Badge>
+            </div>
+          )}
+        </div>
+      </Link>
     </div>
   )
 }
