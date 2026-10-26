@@ -71,7 +71,13 @@ export const GET = handler(async (request: NextRequest) => {
       productId: image.productId,
       productName: product?.name ?? image.fileName,
       fileName: image.fileName,
-      imageUrl: mediaUrl('originals', image.storageKey),
+      // `?thumb=1` (see `ensureThumbnail`'s doc comment): this is a visual
+      // backdrop the builder positions with CSS percentages derived from
+      // `image`/`anchors` below, never from the rendered `<img>`'s own
+      // pixel size — a thumbnail is pixel-for-pixel as accurate here as the
+      // full original, at a fraction of the download. Up to `MAX_SUBJECTS`
+      // (12) of these can load at once just from opening the builder.
+      imageUrl: `${mediaUrl('originals', image.storageKey)}?thumb=1`,
       image: metadata.image,
       anchors: metadata.anchors,
       shotType: metadata.shot.type,

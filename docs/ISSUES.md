@@ -1448,6 +1448,27 @@ batch PROCESSING time (issue 4's own territory) — a slow vision/render
 backlog on a capacity-constrained box is unrelated and unaffected by this
 fix.
 
+**Follow-up, same day: the template builder's live preview had the same
+problem.** `/api/preview/subjects/route.ts` (the endpoint behind the
+builder's "Framing" preview — up to `MAX_SUBJECTS` = 12 photos loaded at
+once, to solve framing against locally without a server round trip per
+slider move) also pointed `imageUrl` straight at the original. Confirmed
+safe to thumbnail before changing it, not assumed: every consumer
+(`template-preview.tsx`'s `BackgroundLayer` and framed-subject `<img>`)
+positions the image with CSS percentages derived from `subject.image`/
+`subject.anchors` — real, server-computed numbers — never from the
+rendered `<img>` element's own pixel size, so a thumbnail backdrop is
+exactly as accurate as the full original for this purpose. The one place
+that DOES need true resolution, the Vision Debug panel's labelled
+per-anchor inspection, is a deliberately separate view (the builder's own
+overlay explicitly disables anchor labels with a comment pointing there)
+and was not touched by this change at all. `imageUrl` now requests
+`?thumb=1` the same way the Products page does. Covered by the same
+underlying `ensureThumbnail`/media-route test suite (issue 16, above) —
+this call site is a one-line, directly-reviewable use of that already-
+tested mechanism, not new logic of its own. Full suite (480 tests) and
+`tsc --noEmit` clean.
+
 ---
 
 ## Phase 4 feature scope note
