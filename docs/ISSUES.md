@@ -1522,6 +1522,66 @@ correctly on its own. Full suite (486 tests), `tsc --noEmit`, and a full
 
 ---
 
+## Issue 18 — Colorway/collage sheets get a different shot type per sheet (requested 2026-10-27)
+
+**Status: Done.** User: a product sheet showing several colorways of the
+same garment in one image (e.g. a 2x2 grid — "Maroon / Olive / Navy /
+Black") gets a different per-photo shot-type guess sheet to sheet, since
+each sheet's own crop reads differently to the detector even though a
+human would call every sheet in the folder the same kind of asset.
+Confirmed live in the template builder: the same rule, same "Flat lay /
+product" style, cropped one sheet (detected "Product only") tight and
+wrong, and another sheet (detected "Half body") correctly — purely
+because of the detection split, not the rule or style.
+
+**Root cause**: shot type is detected per photo, with no way to say "this
+whole folder is one thing" when a folder's images are composite
+sheets rather than ordinary single-garment-per-photo shots.
+
+**Fix — a per-product manual override**, picked from the existing
+shot-type labels (no new category), that every downstream consumer reads
+instead of each photo's own detection:
+- `products.shot_type_override` (nullable; `null` is the default —
+  auto-detected, unchanged from before this existed). Lives only in
+  `src/db/migrations/001-product-shot-type-override.sql`, not also in
+  `schema.sql`'s baseline — SQLite has no `ADD COLUMN IF NOT EXISTS`, so
+  adding it to both would fail the migration on every brand new database
+  with "duplicate column name".
+- `getUsableAnalysis` (`src/services/vision-service.ts`) takes an optional
+  override argument and swaps `shot.type` in the returned metadata before
+  anything downstream sees it — one choke point, so framing/rendering,
+  AI-Extend eligibility, the Products page badge, the product detail page,
+  and the template builder's preview all pick it up automatically, without
+  each of the 7 call sites re-implementing "override ?? detected" on its
+  own. The stored vision analysis row itself is never touched — reading
+  without an override still sees the real detected type.
+- `POST /api/products/[productId]/shot-type-override` sets or clears it
+  (`shotType: null` clears).
+- UI: a collapsed "Does a folder's shot type need fixing?" section on the
+  Import page's completion screen (`src/components/import/import-shot-type-overrides.tsx`),
+  per explicit request to set it once per folder right after import
+  finishes, not per photo and not buried on each product's own detail
+  page. Collapsed by default so a routine import isn't interrupted by a
+  list of every folder it just created.
+
+**Deliberately not done**: no automatic "this looks like a collage"
+detection, no new shot-type category for these sheets, no per-photo
+override — all explicitly scoped out in favor of the single per-folder
+override, confirmed with the user before building.
+
+**Tests**: `tests/db/product-shot-type-override.test.ts` (default/set/clear),
+`tests/services/vision-service-shot-type-override.test.ts` (the choke
+point itself — override applied, other fields untouched, explicit `null`
+behaves like no override, the stored record is never mutated),
+`tests/products/shot-type-override-api.test.ts` (set/clear/invalid
+value/missing product/auth), `tests/products/shot-type-override-end-to-end.test.ts`
+(the actual reported symptom, through the real Products-list and
+preview/subjects routes, plus a no-override control case proving
+unchanged behaviour). Full suite (507 tests), `tsc --noEmit`, and lint
+all clean.
+
+---
+
 ## Phase 4 feature scope note
 
 **Correction to the original framing of this feature**: per-strategy
