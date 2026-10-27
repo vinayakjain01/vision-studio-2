@@ -74,7 +74,7 @@ export const GET = handler(
     const pageImages = allImages.slice(start, start + pageSize)
 
     const details: ProductImageDetail[] = pageImages.map(image => {
-      const { metadata, stale } = getUsableAnalysis(image.sourceHash)
+      const { metadata, stale } = getUsableAnalysis(image.sourceHash, product.shotTypeOverride)
       return {
         id: image.id,
         fileName: image.fileName,

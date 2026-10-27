@@ -187,7 +187,7 @@ export async function handleRenderJob(
 
   const product = products.get(productId)
 
-  const { metadata } = getUsableAnalysis(sourceHash)
+  const { metadata } = getUsableAnalysis(sourceHash, product?.shotTypeOverride)
   const analysisRecord = visionAnalyses.find(sourceHash, ENGINE_VERSION)
 
   const source = await readMedia('originals', image.storageKey)
@@ -427,7 +427,8 @@ export async function handleBackgroundFillJob(
     return { skipped: true, reason: 'template no longer uses ai_extend' }
   }
 
-  const { metadata } = getUsableAnalysis(sourceHash)
+  const product = products.get(image.productId)
+  const { metadata } = getUsableAnalysis(sourceHash, product?.shotTypeOverride)
 
   // Phase 2/3 (docs/ISSUES.md issue 7): same shot-type gate as
   // handleRenderJob's `effectiveBackground` — a hanger/flat-lay/product-only

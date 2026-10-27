@@ -54,8 +54,8 @@ export const POST = handler(async (request: NextRequest) => {
     return badRequest('document is required when persist is not set')
   }
 
-  const { metadata } = getUsableAnalysis(image.sourceHash)
   const product = products.get(image.productId)
+  const { metadata } = getUsableAnalysis(image.sourceHash, product?.shotTypeOverride)
   const source = await readMedia('originals', image.storageKey)
 
   const result = await renderCreative({

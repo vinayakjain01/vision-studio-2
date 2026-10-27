@@ -23,6 +23,7 @@ import {
   type VisionMetadata,
   type Size,
 } from '@/vision'
+import type { ShotType } from '@/vision/types'
 import { config } from '@/config'
 import { derivedAssets, visionAnalyses, images } from '@/db/repositories'
 import { putDerived, readMedia, mediaUrl } from '@/storage/media-store'
@@ -288,21 +289,39 @@ export function getVisionAssetUrls(sourceHash: string): VisionAssets {
  * version bump — every product page and preview still works, showing slightly
  * stale landmarks, while re-analysis works through the queue.
  */
-export function getUsableAnalysis(sourceHash: string): {
+/**
+ * `shotTypeOverride` is the owning product's manual override (see
+ * `products.shotTypeOverride`), applied here — the single place every
+ * consumer of this function reads shot type from — rather than at each call
+ * site. The stored record itself is never touched: a later call without an
+ * override still sees the real detected type.
+ */
+export function getUsableAnalysis(
+  sourceHash: string,
+  shotTypeOverride?: ShotType | null
+): {
   metadata: VisionMetadata | null
   stale: boolean
 } {
   const current = visionAnalyses.find(sourceHash, ENGINE_VERSION)
   if (current?.status === 'ready' && current.payload?.schemaVersion) {
-    return { metadata: current.payload, stale: false }
+    return { metadata: withShotTypeOverride(current.payload, shotTypeOverride), stale: false }
   }
 
   const latest = visionAnalyses.latest(sourceHash)
   if (latest?.status === 'ready' && latest.payload?.schemaVersion) {
-    return { metadata: latest.payload, stale: true }
+    return { metadata: withShotTypeOverride(latest.payload, shotTypeOverride), stale: true }
   }
 
   return { metadata: null, stale: false }
+}
+
+function withShotTypeOverride(
+  metadata: VisionMetadata,
+  shotTypeOverride: ShotType | null | undefined
+): VisionMetadata {
+  if (!shotTypeOverride) return metadata
+  return { ...metadata, shot: { ...metadata.shot, type: shotTypeOverride } }
 }
 
 /** Queue-facing helper: mark every image with this hash after an analysis run. */

@@ -35,6 +35,7 @@ import {
 import { fetcher, postJson, patchJson } from '@/lib/api'
 import { jitterMs } from '@/lib/polling'
 import { DeleteButton } from '@/components/ui/delete-button'
+import { ImportShotTypeOverrides } from '@/components/import/import-shot-type-overrides'
 import { formatBytes, timeAgo } from '@/lib/utils'
 import {
   Alert,
@@ -396,6 +397,7 @@ export function ImportClient({ recentImports }: { recentImports: ImportRecord[] 
               on shot type become available as images finish.
             </Alert>
           </div>
+          <ImportShotTypeOverrides importId={result.importId} />
         </Panel>
       )}
 

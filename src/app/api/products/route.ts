@@ -18,6 +18,7 @@ export interface ProductSummary {
   imageCount: number
   visionStatus: string
   shotType: string | null
+  shotTypeOverride: string | null
   garmentType: string | null
   confidence: number | null
   thumbnailUrl: string | null
@@ -46,7 +47,9 @@ export const GET = handler(async (request: NextRequest) => {
     const primary =
       productImages.find(i => i.id === product.primaryImageId) ?? productImages[0] ?? null
 
-    const analysis = primary ? getUsableAnalysis(primary.sourceHash).metadata : null
+    const analysis = primary
+      ? getUsableAnalysis(primary.sourceHash, product.shotTypeOverride).metadata
+      : null
 
     return {
       id: product.id,
@@ -56,6 +59,7 @@ export const GET = handler(async (request: NextRequest) => {
       imageCount: product.imageCount,
       visionStatus: primary?.visionStatus ?? 'pending',
       shotType: analysis?.shot.type ?? null,
+      shotTypeOverride: product.shotTypeOverride,
       garmentType: analysis?.garment.type ?? null,
       confidence: analysis?.quality.overall ?? null,
       // `?thumb=1`: the media route serves a small cached JPEG instead of

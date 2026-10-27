@@ -28,7 +28,7 @@ import type {
   VisionRecord,
   VisionStatus,
 } from './types'
-import type { VisionMetadata } from '@/vision/types'
+import type { VisionMetadata, ShotType } from '@/vision/types'
 import type { TemplateDocument } from '@/templates/types'
 import type { FramingResult } from '@/framing/types'
 
@@ -156,6 +156,7 @@ function toProduct(row: any): ProductRecord {
     category: row.category,
     imageCount: row.image_count,
     primaryImageId: row.primary_image_id,
+    shotTypeOverride: row.shot_type_override ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -296,6 +297,13 @@ export const products = {
 
   remove(id: string): void {
     getDb().prepare('DELETE FROM products WHERE id = ?').run(id)
+  },
+
+  /** Null clears it (back to auto-detect) — the same column either way. */
+  setShotTypeOverride(id: string, shotType: ShotType | null): void {
+    getDb()
+      .prepare('UPDATE products SET shot_type_override = ?, updated_at = ? WHERE id = ?')
+      .run(shotType, nowIso(), id)
   },
 }
 

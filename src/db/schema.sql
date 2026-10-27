@@ -64,6 +64,11 @@ CREATE TABLE IF NOT EXISTS products (
   created_at        TEXT NOT NULL,
   updated_at        TEXT NOT NULL,
   UNIQUE (import_id, folder_path, slug)
+  -- shot_type_override lives in migrations/001-product-shot-type-override.sql,
+  -- not here — SQLite has no `ADD COLUMN IF NOT EXISTS`, so adding it to both
+  -- this baseline AND a migration would fail the migration on every brand new
+  -- database with "duplicate column name". One place, applied to old and new
+  -- databases alike through the same migration-tracking mechanism.
 );
 
 CREATE INDEX IF NOT EXISTS idx_products_import   ON products (import_id);

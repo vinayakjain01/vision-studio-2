@@ -85,6 +85,12 @@ export const ROUTE_MANIFEST: RouteEntry[] = [
     pathResource: { param: 'productId', resource: 'product', methods: ['POST'] },
     note: '',
   },
+  {
+    routePath: '/api/products/[productId]/shot-type-override',
+    methods: ['POST'],
+    pathResource: { param: 'productId', resource: 'product', methods: ['POST'] },
+    note: '',
+  },
 
   { routePath: '/api/templates', methods: ['GET', 'POST'], listResource: 'template', note: 'POST is create-only, no ID to check' },
   {

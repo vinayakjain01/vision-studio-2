@@ -41,6 +41,8 @@ export interface ProductRecord {
   category: string | null
   imageCount: number
   primaryImageId: string | null
+  /** Manual override applied to every photo in this product — null means auto-detected. */
+  shotTypeOverride: ShotType | null
   createdAt: string
   updatedAt: string
 }

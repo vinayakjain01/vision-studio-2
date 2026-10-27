@@ -120,7 +120,7 @@ export interface BatchPlan {
 }
 
 function toSubject(product: ProductRecord, image: ImageRecord): RuleSubject {
-  const { metadata } = getUsableAnalysis(image.sourceHash)
+  const { metadata } = getUsableAnalysis(image.sourceHash, product.shotTypeOverride)
   return {
     productId: product.id,
     productName: product.name,

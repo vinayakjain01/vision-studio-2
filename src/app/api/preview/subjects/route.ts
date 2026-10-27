@@ -57,10 +57,10 @@ export const GET = handler(async (request: NextRequest) => {
   const seenShotTypes = new Set<ShotType>()
 
   const build = (image: (typeof ready)[number]): PreviewSubject | null => {
-    const { metadata } = getUsableAnalysis(image.sourceHash)
+    const product = products.get(image.productId)
+    const { metadata } = getUsableAnalysis(image.sourceHash, product?.shotTypeOverride)
     if (!metadata) return null
 
-    const product = products.get(image.productId)
     const person =
       metadata.primaryPersonIndex !== null ? metadata.persons[metadata.primaryPersonIndex] : null
     const face =
