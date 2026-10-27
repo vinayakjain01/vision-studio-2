@@ -510,49 +510,53 @@ function ImportRow({ record, onDeleted }: { record: ImportRecord; onDeleted: () 
   }
 
   return (
-    <li className="flex items-center justify-between gap-3 px-4 py-2.5">
-      <div className="min-w-0">
-        <p className="truncate text-xs font-medium">{record.name}</p>
-        <p className="numeric mt-0.5 text-[11px] text-[var(--color-ink-subtle)]">
-          {total} images · {timeAgo(record.createdAt)}
-          {vision && outstanding > 0 && ` · ${outstanding} analysing`}
-          {vision && needsAttention > 0 && ` · ${needsAttention} need attention`}
-        </p>
+    <li>
+      <div className="flex items-center justify-between gap-3 px-4 py-2.5">
+        <div className="min-w-0">
+          <p className="truncate text-xs font-medium">{record.name}</p>
+          <p className="numeric mt-0.5 text-[11px] text-[var(--color-ink-subtle)]">
+            {total} images · {timeAgo(record.createdAt)}
+            {vision && outstanding > 0 && ` · ${outstanding} analysing`}
+            {vision && needsAttention > 0 && ` · ${needsAttention} need attention`}
+          </p>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-2">
+          {outstanding > 0 ? (
+            <Badge tone="accent">
+              <Loader2 size={10} className="animate-spin" /> analysing
+            </Badge>
+          ) : needsAttention > 0 ? (
+            <Badge tone="warning">
+              <AlertTriangle size={10} /> {needsAttention}
+            </Badge>
+          ) : total > 0 ? (
+            <Badge tone="positive">
+              <CheckCircle2 size={10} /> analysed
+            </Badge>
+          ) : null}
+
+          {needsAttention > 0 && (
+            <Button size="sm" variant="ghost" onClick={reanalyze} disabled={busy}>
+              {busy ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+              Re-analyse
+            </Button>
+          )}
+
+          <DeleteButton
+            confirmLabel={`Delete ${total} photo${total === 1 ? '' : 's'}`}
+            successLabel={`Deleted "${record.name}"`}
+            onDeleted={onDeleted}
+            onDelete={async () => {
+              const r = await fetch(`/api/imports/${record.id}`, { method: 'DELETE' })
+              if (!r.ok) throw new Error('Could not delete this import')
+              return r.json()
+            }}
+          />
+        </div>
       </div>
 
-      <div className="flex shrink-0 items-center gap-2">
-        {outstanding > 0 ? (
-          <Badge tone="accent">
-            <Loader2 size={10} className="animate-spin" /> analysing
-          </Badge>
-        ) : needsAttention > 0 ? (
-          <Badge tone="warning">
-            <AlertTriangle size={10} /> {needsAttention}
-          </Badge>
-        ) : total > 0 ? (
-          <Badge tone="positive">
-            <CheckCircle2 size={10} /> analysed
-          </Badge>
-        ) : null}
-
-        {needsAttention > 0 && (
-          <Button size="sm" variant="ghost" onClick={reanalyze} disabled={busy}>
-            {busy ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-            Re-analyse
-          </Button>
-        )}
-
-        <DeleteButton
-          confirmLabel={`Delete ${total} photo${total === 1 ? '' : 's'}`}
-          successLabel={`Deleted "${record.name}"`}
-          onDeleted={onDeleted}
-          onDelete={async () => {
-            const r = await fetch(`/api/imports/${record.id}`, { method: 'DELETE' })
-            if (!r.ok) throw new Error('Could not delete this import')
-            return r.json()
-          }}
-        />
-      </div>
+      {total > 0 && <ImportShotTypeOverrides importId={record.id} />}
     </li>
   )
 }

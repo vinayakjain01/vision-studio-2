@@ -217,19 +217,29 @@ PM2 only ever tracks the one top-level process.
    tracks (confirm with `git branch --show-current`; it has been
    `multi-tenancy` here, not `main`).
 2. `npm ci`.
-3. **Stop the app before building — do not build while it's running.**
+3. **`npm run db:migrate` — unlike the Docker path above, nothing on this
+   box runs migrations automatically.** `getDb()`/`openTenantDbById()`
+   never call `migrate()` themselves (see `src/db/client.ts`); it only
+   runs at tenant-creation time otherwise. Confirmed the hard way
+   (2026-10-27): a deploy that added a column via
+   `src/db/migrations/NNN-*.sql` went out, built and restarted cleanly,
+   and every existing tenant's `app.db` was still missing the column —
+   `next build` has no reason to fail on a schema it never touches, so
+   this step is the only thing that actually applies it. Idempotent and
+   safe to run every deploy, migration or not.
+4. **Stop the app before building — do not build while it's running.**
    `pm2 stop vision-studio` first. Confirmed the hard way (2026-10-22):
    `next build` was OOM-killed outright on this box while the running app's
    workers were still resident (together using most of the 8 GB, this box
    also has heavy swap usage under normal load — see `free -h`). Stopping
    first frees that memory and the same build that failed completes
    cleanly in well under a minute.
-4. `NODE_ENV=production npm run build`.
-5. `pm2 start vision-studio` (or `restart`, if it was left registered)
+5. `NODE_ENV=production npm run build`.
+6. `pm2 start vision-studio` (or `restart`, if it was left registered)
    — this also respawns fresh worker processes the next time work is
    enqueued, clearing out any long-lived worker that had been running
    since the previous deploy.
-6. Confirm `curl http://127.0.0.1:3000/api/health` returns
+7. Confirm `curl http://127.0.0.1:3000/api/health` returns
    `{"status":"ok"}` from the box itself, and that the public URL answers
    too, before considering the update complete.
 
