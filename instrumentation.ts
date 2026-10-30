@@ -27,4 +27,23 @@ export async function register(): Promise<void> {
   // separate web-server concern outside what this phase asks for.
   const { registerGracefulShutdown } = await import('@/jobs/shutdown')
   registerGracefulShutdown({ exitProcess: true })
+
+  // The pool is started lazily by ensurePoolRunning() — deliberately, so a
+  // browsing-only session never pays for idle workers or loaded models (see
+  // src/jobs/pool.ts's module doc). But that lazy start is keyed on a NEW
+  // job being enqueued, not on existing queued work — a restart (deploy,
+  // crash, manual `pm2 restart`) kills the pool along with the process, and
+  // anything already `pending`/`claimed` from before the restart then sits
+  // cold forever unless something happens to enqueue fresh work afterward.
+  // Confirmed the hard way (2026-10-30): a live "Generate" batch was
+  // mid-flight during an unrelated deploy's restarts and its remaining jobs
+  // never resumed on their own. If there's already unclaimed work at boot,
+  // this is not a browsing-only session — start the pool immediately rather
+  // than waiting for it to happen to get nudged again.
+  const { stats } = await import('@/jobs/queue')
+  const { pending, claimed } = stats()
+  if (pending + claimed > 0) {
+    const { ensurePoolRunning } = await import('@/jobs/pool')
+    ensurePoolRunning()
+  }
 }
