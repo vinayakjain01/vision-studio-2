@@ -143,7 +143,7 @@ export const MODEL_LIST: ModelSpec[] = Object.values(MODELS)
  * re-analysis pass.
  */
 export const ENGINE_VERSION =
-  'vision-1.0.2+pose-yolov8n+face-scrfd10g+seg-modnet+parse-segformerb2'
+  'vision-1.0.3+pose-yolov8n+face-scrfd10g+seg-modnet+parse-segformerb2'
 
 // ── Model-specific input geometry ────────────────────────────────────────────
 

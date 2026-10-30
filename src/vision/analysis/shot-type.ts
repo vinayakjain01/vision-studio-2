@@ -129,6 +129,28 @@ const HEAD_KEYPOINT_PAIRS: readonly (readonly [keyof Keypoints, keyof Keypoints]
   ['left_ear', 'right_ear'],
 ]
 
+/**
+ * Ankle keypoint score that counts as WEAK-BUT-REAL evidence when deciding
+ * whether to trust a mask-derived `feet` anchor (see `anklesVisible` below) —
+ * never used as a standalone "ankle visible" fact, which is `ankle_center`,
+ * built from the engine-wide `visible()` threshold of 0.3.
+ *
+ * A visible KNEE is not evidence the frame reaches the ANKLE — they are
+ * different joints, and treating one as a proxy for the other produced a real
+ * bug (reported 2026-10-30): photos cropped around knee/shin height, with a
+ * long garment reaching the bottom of the frame, were classified `full_body`
+ * because `feet` (a pure crop-boundary/mask artifact there, not a real foot)
+ * plus a resolved knee were enough. Five real catalog photos confirmed this —
+ * ankle keypoint scores of 0.01–0.17 (`visible: false`) — and a sweep of
+ * every production `full_body` photo lacking a real `ankle_center` anchor (61
+ * of 499) found the same split: best ankle-keypoint score of min 0.007 /
+ * median 0.058 / max 0.631, with 55 of 61 under 0.2 and only 6 above it. 0.2
+ * sits just above that cluster of confirmed-wrong cases while still leaving
+ * room for the weak-but-real evidence the feet+knee fallback was originally
+ * built to trust.
+ */
+const ANKLE_WEAK_FLOOR = 0.2
+
 export function classifyShot(ctx: ShotContext): ShotClassification {
   const signals = computeSignals(ctx)
 
@@ -316,6 +338,13 @@ function computeSignals(ctx: ShotContext): ShotSignals {
         ([a, b]) => ctx.person!.keypoints[a]?.visible === true && ctx.person!.keypoints[b]?.visible === true
       ))
 
+  // Weak-but-real ankle evidence, below the full `visible()` gate that
+  // `ankle_center` already requires — see `ANKLE_WEAK_FLOOR`.
+  const ankleKeypointWeaklySeen =
+    ctx.person != null &&
+    ((ctx.person.keypoints.left_ankle?.score ?? 0) >= ANKLE_WEAK_FLOOR ||
+      (ctx.person.keypoints.right_ankle?.score ?? 0) >= ANKLE_WEAK_FLOOR)
+
   const faceHeight = ctx.face ? ctx.face.box.bottom - ctx.face.box.top : 0
   const personHeight = ctx.person ? ctx.person.box.bottom - ctx.person.box.top : 0
 
@@ -363,7 +392,7 @@ function computeSignals(ctx: ShotContext): ShotSignals {
     // exactly at the frame's bottom edge turned out to be neckline/torso detail
     // shots with a 0.00–0.02 knee-keypoint score, against four genuine
     // full-length photos scoring 0.29–0.73.
-    anklesVisible: has('ankle_center') || (has('feet') && has('knee_center')),
+    anklesVisible: has('ankle_center') || (has('feet') && has('knee_center') && ankleKeypointWeaklySeen),
     faceHeightRatio: ctx.imageHeight > 0 ? faceHeight / ctx.imageHeight : 0,
     personHeightRatio: ctx.imageHeight > 0 ? personHeight / ctx.imageHeight : 0,
     personCoverage: ctx.personCoverage,
