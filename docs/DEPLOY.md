@@ -234,6 +234,16 @@ PM2 only ever tracks the one top-level process.
    also has heavy swap usage under normal load — see `free -h`). Stopping
    first frees that memory and the same build that failed completes
    cleanly in well under a minute.
+
+   **Confirmed again the hard way (2026-10-30), on a fully idle box with 7+
+   GB free:** `next build` defaults to Turbopack, and the `next-build`
+   process itself (not the stopped app) grew to ~7.6–7.7 GB anon-RSS and got
+   OOM-killed by the kernel — four times in a row, including after deleting
+   `.next` entirely for a clean build. `npm run build` now runs
+   `next build --webpack` (matching the `dev` script, which already opts out
+   of Turbopack) and that same build completed cleanly. If a future deploy
+   somehow reverts to a Turbopack build here, don't just retry it — switch
+   to `--webpack` first.
 5. `NODE_ENV=production npm run build`.
 6. `pm2 start vision-studio` (or `restart`, if it was left registered)
    — this also respawns fresh worker processes the next time work is
