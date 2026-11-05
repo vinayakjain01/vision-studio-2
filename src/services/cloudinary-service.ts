@@ -500,7 +500,11 @@ function parseRetryAfterMs(header: string | null): number | undefined {
   return undefined
 }
 
-function classifyHttp(status: number, detail: string, retryAfterHeader: string | null = null): CloudinaryServiceError {
+export function classifyHttp(
+  status: number,
+  detail: string,
+  retryAfterHeader: string | null = null
+): CloudinaryServiceError {
   const text = detail.slice(0, 400)
   if (status === 401 || status === 403) {
     return new CloudinaryServiceError(
@@ -522,7 +526,14 @@ function classifyHttp(status: number, detail: string, retryAfterHeader: string |
       'credits'
     )
   }
-  if (status >= 500) {
+  // 423 Locked — Cloudinary's own way of saying this specific generative-fill
+  // operation is still being computed asynchronously server-side, not that it
+  // was rejected. Confirmed in production (2026-11-05): a resource genuinely
+  // ready moments later succeeds on a plain retry with no other change.
+  // Treated the same as a 5xx — a property of the moment, worth retrying with
+  // backoff — never as `rejected`, which the dispatcher (ai-extend-
+  // dispatcher.ts's RETRYABLE_KINDS) never retries even once.
+  if (status === 423 || status >= 500) {
     return new CloudinaryServiceError(`Cloudinary returned a server error (${status}): ${text}`, 'server_error')
   }
   return new CloudinaryServiceError(`Cloudinary returned ${status}: ${text}`, 'rejected')
