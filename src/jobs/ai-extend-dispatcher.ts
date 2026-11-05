@@ -107,6 +107,46 @@ function releaseSlots(tenantId: string): void {
   })
 }
 
+/**
+ * Resync `ai_extend_global_state`/`ai_extend_tenant_state.in_flight` against
+ * the actual count of `background_fill` jobs currently `running` — the same
+ * reconciliation `queue.reclaimStale()`/`reconcileRunningJobs()` already do
+ * for the `jobs` table itself and `tenant_queue_state`, called the same way
+ * (pool start, then every periodic sweep).
+ *
+ * `releaseSlots` above only runs if the worker holding a slot reaches its
+ * own `finally` — a hard kill (a crashed or forcibly terminated worker
+ * process) skips that entirely, leaking the slot forever: nothing else ever
+ * decrements it. Confirmed in production (2026-11-05): `in_flight` stuck at
+ * its configured cap with ZERO `background_fill` jobs actually running and
+ * zero worker processes alive at all — every future AI Extend call refused
+ * as "at capacity" regardless of real load, with no way to self-heal short
+ * of a manual database edit. The `jobs` table's own `status = 'running'`
+ * count is ground truth; this just makes the counters agree with it again.
+ */
+export function reconcileAiExtendConcurrency(): void {
+  transactionOn(getControlDb(), db => {
+    const globalCount = (
+      db
+        .prepare(`SELECT COUNT(*) AS n FROM jobs WHERE kind = 'background_fill' AND status = 'running'`)
+        .get() as { n: number }
+    ).n
+    db.prepare(
+      `INSERT INTO ai_extend_global_state (id, in_flight, tokens, last_refill_at) VALUES (1, ?, 0, ?)
+       ON CONFLICT (id) DO UPDATE SET in_flight = excluded.in_flight`
+    ).run(globalCount, nowIso())
+
+    db.exec(
+      `UPDATE ai_extend_tenant_state
+       SET in_flight = (
+         SELECT COUNT(*) FROM jobs
+         WHERE jobs.tenant_id = ai_extend_tenant_state.tenant_id
+           AND jobs.kind = 'background_fill' AND jobs.status = 'running'
+       )`
+    )
+  })
+}
+
 // ─── Token bucket (global), SQLite-backed ───────────────────────────────────
 
 function tryConsumeToken(): boolean {

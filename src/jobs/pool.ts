@@ -50,6 +50,7 @@ import { tenants } from '@/db/control-repositories'
 import { sweepOrphanedMedia } from '@/services/cleanup-service'
 import { reconcileStorageUsage, sweepStaleTmpFiles } from '@/storage/media-store'
 import { backfillHourlyRollups, pruneHourlyRollups } from './queue-wait-rollup'
+import { reconcileAiExtendConcurrency } from './ai-extend-dispatcher'
 import { readRssMb } from '@/lib/process-rss'
 import type { JobKind } from '@/db/types'
 import type { WorkerMessage } from './worker-entry'
@@ -226,6 +227,7 @@ class WorkerPool {
       console.log(`[pool] reclaimed ${reclaimed} stale job(s) from a previous run`)
     }
     queue.reconcileRunningJobs()
+    reconcileAiExtendConcurrency()
 
     const visionSlots = config.jobs.visionConcurrency
     const renderSlots = config.jobs.renderConcurrency
@@ -268,6 +270,7 @@ class WorkerPool {
       try {
         queue.reclaimStale()
         queue.reconcileRunningJobs()
+        reconcileAiExtendConcurrency()
         queue.promoteAgedBulkJobs()
       } catch {
         // Transient lock contention; the next sweep covers it.

@@ -1,11 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTestTenant } from '../helpers/tenancy-fixture'
-import { dispatchGenerativeFill, AiExtendQuotaExceededError, AiExtendBusyError } from '@/jobs/ai-extend-dispatcher'
+import {
+  dispatchGenerativeFill,
+  reconcileAiExtendConcurrency,
+  AiExtendQuotaExceededError,
+  AiExtendBusyError,
+} from '@/jobs/ai-extend-dispatcher'
 import { CloudinaryServiceError, type GenerativeFillProvider, type GenerativeFillRequest } from '@/services/cloudinary-service'
 import { getControlDb } from '@/db/client'
 import { migrateControl } from '@/db/migrate'
 import { quotas, usageCounters, currentPeriod } from '@/db/control-repositories'
 import { config } from '@/config'
+import * as queue from '@/jobs/queue'
+import { runWithTenant } from '@/tenancy/context'
 
 const REQUEST: GenerativeFillRequest = {
   photo: Buffer.from('fake'),
@@ -201,5 +208,101 @@ describe('AI Extend dispatcher', () => {
       AiExtendBusyError
     )
     expect(called).toBe(false)
+  })
+})
+
+/**
+ * Confirmed in production (2026-11-05): `releaseSlots` only runs if the
+ * worker holding a slot reaches its own `finally` — a hard kill (a crashed
+ * or forcibly terminated worker process) skips that entirely, leaking the
+ * slot forever. Nothing else ever decremented it, so `in_flight` was found
+ * stuck at its configured cap with ZERO `background_fill` jobs actually
+ * `running` and zero worker processes alive at all — every future AI Extend
+ * call refused as "at capacity" regardless of real load. Same class of bug
+ * `queue.reclaimStale()`/`reconcileRunningJobs()` already exists to fix for
+ * the `jobs` table itself; this is the equivalent for the AI-Extend
+ * concurrency counters, called the same way (pool start + periodic sweep).
+ */
+describe('reconcileAiExtendConcurrency', () => {
+  beforeEach(() => {
+    const db = getControlDb()
+    migrateControl(db)
+    db.exec('DELETE FROM ai_extend_global_state')
+    db.exec('DELETE FROM ai_extend_tenant_state')
+    db.exec('DELETE FROM jobs')
+  })
+
+  it('resets a leaked global in_flight counter to 0 when no background_fill job is actually running', () => {
+    getControlDb()
+      .prepare(
+        `INSERT INTO ai_extend_global_state (id, in_flight, tokens, last_refill_at) VALUES (1, 4, 0, ?)`
+      )
+      .run(new Date().toISOString())
+
+    reconcileAiExtendConcurrency()
+
+    const row = getControlDb().prepare('SELECT in_flight FROM ai_extend_global_state WHERE id = 1').get() as {
+      in_flight: number
+    }
+    expect(row.in_flight).toBe(0)
+  })
+
+  it('resets a leaked per-tenant in_flight counter to 0 when that tenant has no background_fill job running', () => {
+    const t = createTestTenant('T')
+    getControlDb()
+      .prepare(
+        `INSERT INTO ai_extend_tenant_state (tenant_id, in_flight) VALUES (?, ?)
+         ON CONFLICT (tenant_id) DO UPDATE SET in_flight = excluded.in_flight`
+      )
+      .run(t.tenantId, 3)
+
+    reconcileAiExtendConcurrency()
+
+    const row = getControlDb().prepare('SELECT in_flight FROM ai_extend_tenant_state WHERE tenant_id = ?').get(t.tenantId) as {
+      in_flight: number
+    }
+    expect(row.in_flight).toBe(0)
+  })
+
+  it('sets in_flight to the REAL count of running background_fill jobs, global and per tenant', () => {
+    const t = createTestTenant('T')
+    runWithTenant({ tenantId: t.tenantId, userId: t.userId, role: 'owner' }, () => {
+      const { ids } = queue.enqueue(t.tenantId, [
+        { kind: 'background_fill', payload: { imageId: 'i1' } as any },
+        { kind: 'background_fill', payload: { imageId: 'i2' } as any },
+      ])
+      for (const id of ids) {
+        const claimed = queue.claim('background_fill', 'w1')
+        expect(claimed?.id).toBe(id) // claims in insertion order — asserts the seed, not the fix
+        queue.markRunning(id, 'w1')
+      }
+    })
+
+    getControlDb()
+      .prepare(
+        `INSERT INTO ai_extend_global_state (id, in_flight, tokens, last_refill_at) VALUES (1, 99, 0, ?)`
+      )
+      .run(new Date().toISOString())
+    getControlDb()
+      .prepare(
+        `INSERT INTO ai_extend_tenant_state (tenant_id, in_flight) VALUES (?, ?)
+         ON CONFLICT (tenant_id) DO UPDATE SET in_flight = excluded.in_flight`
+      )
+      .run(t.tenantId, 99)
+
+    reconcileAiExtendConcurrency()
+
+    const globalRow = getControlDb().prepare('SELECT in_flight FROM ai_extend_global_state WHERE id = 1').get() as {
+      in_flight: number
+    }
+    const tenantRow = getControlDb()
+      .prepare('SELECT in_flight FROM ai_extend_tenant_state WHERE tenant_id = ?')
+      .get(t.tenantId) as { in_flight: number }
+    expect(globalRow.in_flight).toBe(2)
+    expect(tenantRow.in_flight).toBe(2)
+  })
+
+  it('is safe to call with no existing state rows at all', () => {
+    expect(() => reconcileAiExtendConcurrency()).not.toThrow()
   })
 })
