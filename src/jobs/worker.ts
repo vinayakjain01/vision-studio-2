@@ -35,7 +35,7 @@ import { ENGINE_VERSION } from '@/vision/model-registry'
 import { VisionUnavailableError, type ShotType } from '@/vision/types'
 import { eligibleForAiExtend } from '@/vision/analysis/shot-type'
 import type { TemplateDocument } from '@/templates/types'
-import type { BackgroundFillJobPayload, RenderJobPayload, VisionJobPayload } from '@/db/types'
+import type { BackgroundFillJobPayload, JobRecord, RenderJobPayload, VisionJobPayload } from '@/db/types'
 
 export interface HandlerResult {
   [key: string]: unknown
@@ -77,6 +77,58 @@ export class BackgroundNotReadyError extends Error {
   ) {
     super(message)
     this.name = 'BackgroundNotReadyError'
+  }
+}
+
+export interface BackgroundFillDependencyDecision {
+  /** Whether a fresh `background_fill` job should be queued now — safe to call unconditionally: `ensureBackgroundFillQueued`'s own cooldown no-ops if one was already queued/attempted recently. */
+  requeue: boolean
+  /** Passed straight through to `BackgroundNotReadyError`'s `dependencyActive`. */
+  waitIsFree: boolean
+  message: string
+}
+
+/**
+ * Pure decision over what a render job should do about its `background_fill`
+ * dependency, given the latest job record for that dedupe key (or `null` if
+ * none has ever been queued).
+ *
+ * A dependency that reached a TERMINAL state (failed or cancelled) is NOT
+ * treated as a permanent dead end. Three separate "Generate stuck at 0/N
+ * done" incidents (2026-10-30, 2026-11-05 x2) were exactly this: a render
+ * job re-finding the same terminally-failed/cancelled row forever —
+ * `findLatestByDedupeKey` always returns the latest match, and nothing ever
+ * created a newer one — just re-throwing that dead row's stored error on
+ * every retry until the render itself exhausted its own attempts and
+ * permanently failed too. `ensureBackgroundFillQueued`'s own cooldown
+ * already prevents hammering Cloudinary, and the fresh attempt it queues is
+ * itself bounded by its own `maxAttempts`, so giving it another try is safe
+ * and self-terminating — the same reasoning `BackgroundNotReadyError`'s own
+ * doc comment already relies on for a dependency that's merely pending. The
+ * underlying reason is still carried in the message for diagnosis; it is
+ * just no longer a dead end.
+ */
+export function resolveBackgroundFillDependency(
+  dependency: Pick<JobRecord, 'status' | 'error'> | null,
+  templateId: string,
+  photoLabel: string
+): BackgroundFillDependencyDecision {
+  if (dependency && (dependency.status === 'failed' || dependency.status === 'cancelled')) {
+    return {
+      requeue: true,
+      waitIsFree: true,
+      message: `retrying AI-extended background after a previous attempt (${dependency.error ?? 'cancelled'})`,
+    }
+  }
+
+  const alive =
+    dependency !== null &&
+    (dependency.status === 'pending' || dependency.status === 'claimed' || dependency.status === 'running')
+
+  return {
+    requeue: !alive && dependency?.status !== 'completed',
+    waitIsFree: alive,
+    message: `waiting for AI-extended background (template ${templateId}, photo ${photoLabel})`,
   }
 }
 
@@ -246,32 +298,17 @@ export async function handleRenderJob(
         precomputedBackground = cached
       } else {
         // Ask what actually happened to the fill this render needs, rather
-        // than inferring it from elapsed time. Three genuinely different
-        // situations hide behind "the file isn't there yet".
+        // than inferring it from elapsed time. See
+        // `resolveBackgroundFillDependency`'s own doc comment for why a
+        // terminal (failed/cancelled) dependency gets a fresh attempt rather
+        // than being surfaced as a permanent dead end.
         const dedupeKey = backgroundFillDedupeKey(payload)
         const dependency = queue.findLatestByDedupeKey(currentTenant().tenantId, dedupeKey)
-        const alive =
-          dependency !== null &&
-          (dependency.status === 'pending' ||
-            dependency.status === 'claimed' ||
-            dependency.status === 'running')
+        const decision = resolveBackgroundFillDependency(dependency, templateId, sourceHash.slice(0, 12))
 
-        if (dependency && (dependency.status === 'failed' || dependency.status === 'cancelled')) {
-          // The fill genuinely failed. Surface ITS reason — "gave up waiting"
-          // told the operator nothing about why, which on a large run is the
-          // difference between a Cloudinary problem they must act on and a
-          // queue that simply needed longer.
-          throw new Error(
-            `AI-extended background could not be generated: ${dependency.error ?? 'unknown error'}`
-          )
-        }
+        if (decision.requeue) ensureBackgroundFillQueued(payload)
 
-        if (!alive) ensureBackgroundFillQueued(payload)
-
-        throw new BackgroundNotReadyError(
-          `waiting for AI-extended background (template ${templateId}, photo ${sourceHash.slice(0, 12)})`,
-          alive
-        )
+        throw new BackgroundNotReadyError(decision.message, decision.waitIsFree)
       }
     }
   }
