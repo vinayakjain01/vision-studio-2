@@ -38,7 +38,7 @@
  * Server-only.
  */
 
-import { v2 as cloudinary } from 'cloudinary'
+import { v2 as cloudinary, type UploadApiOptions, type UploadApiResponse } from 'cloudinary'
 import '@/lib/sharp-cache'
 import sharp from 'sharp'
 import { config } from '@/config'
@@ -342,18 +342,19 @@ export async function generativeFill(
 
   let publicId: string
   try {
-    const uploaded = await client().uploader.upload(
+    const uploaded = await uploadWithTimeout(
       `data:image/jpeg;base64,${upload.toString('base64')}`,
       {
         folder: 'vision-studio/ai-extend',
         unique_filename: true,
         overwrite: false,
         resource_type: 'image',
-      }
+      },
+      config.cloudinary.requestTimeoutMs
     )
     publicId = uploaded.public_id
   } catch (err) {
-    throw classify(err, 'upload')
+    throw err instanceof CloudinaryServiceError ? err : classify(err, 'upload')
   }
 
   const url = client().url(publicId, {
@@ -545,6 +546,51 @@ function classify(err: unknown, phase: string): CloudinaryServiceError {
   const message = anyErr?.error?.message ?? anyErr?.message ?? String(err)
   if (status) return classifyHttp(status, `${phase}: ${message}`)
   return new CloudinaryServiceError(`Cloudinary ${phase} failed: ${message}`, 'unreachable')
+}
+
+/**
+ * Races the upload SDK call against `timeoutMs`, throwing a properly
+ * classified (retryable) `CloudinaryServiceError` if it wins.
+ *
+ * Confirmed in production (2026-11-10): a background_fill job sat `running`
+ * for 6+ minutes with zero retry activity — unlike every other failure mode
+ * here, which fails and retries within seconds. The Cloudinary SDK's own
+ * `uploader.upload` sets an IDLE-socket timeout on the request (see
+ * node_modules/cloudinary/lib/uploader.js — `post_request.setTimeout`,
+ * default 60s), not a TOTAL-DURATION timeout: as long as the connection
+ * keeps seeing *any* traffic, that timer never fires, however long the
+ * upload actually takes end to end. The generative-fill fetch step already
+ * guards itself with an explicit `AbortController` timeout for exactly this
+ * reason; the upload step — which runs first, before the fetch step is ever
+ * reached — had no equivalent.
+ */
+function uploadWithTimeout(
+  dataUri: string,
+  options: UploadApiOptions,
+  timeoutMs: number
+): Promise<UploadApiResponse> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(
+        new CloudinaryServiceError(
+          `Cloudinary did not finish accepting the upload within ${timeoutMs}ms.`,
+          'timeout'
+        )
+      )
+    }, timeoutMs)
+    client()
+      .uploader.upload(dataUri, options)
+      .then(
+        result => {
+          clearTimeout(timer)
+          resolve(result)
+        },
+        err => {
+          clearTimeout(timer)
+          reject(err)
+        }
+      )
+  })
 }
 
 /** Whether credentials are present — used by the builder to warn up front. */
