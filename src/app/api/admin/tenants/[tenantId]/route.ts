@@ -1,6 +1,6 @@
 /**
- * One tenant: suspend/resume, edit quotas, mark/cancel pending deletion
- * (PATCH), purge (DELETE). Platform-admin only.
+ * One tenant: suspend/resume, edit quotas, clear queue, mark/cancel pending
+ * deletion (PATCH), purge (DELETE). Platform-admin only.
  */
 
 import { NextRequest } from 'next/server'
@@ -10,6 +10,7 @@ import {
   suspendTenant,
   resumeTenant,
   updateTenantQuotas,
+  clearTenantQueue,
   markTenantPendingDeletion,
   cancelPendingDeletion,
   purgeTenant,
@@ -40,6 +41,8 @@ export const PATCH = adminHandler(
           return ok({ ok: true })
         case 'update_quotas':
           return ok(updateTenantQuotas(tenantId, body?.quotas ?? {}, actor))
+        case 'clear_queue':
+          return ok(clearTenantQueue(tenantId, actor))
         default:
           return badRequest(`unknown action: ${body?.action}`)
       }

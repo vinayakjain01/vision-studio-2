@@ -14,6 +14,7 @@ import {
   suspendTenant,
   resumeTenant,
   updateTenantQuotas,
+  clearTenantQueue,
   resetUserPassword,
   markTenantPendingDeletion,
   cancelPendingDeletion,
@@ -150,6 +151,39 @@ describe('admin-service', () => {
       // revocation.
       tenants.setStatus(tenant.tenantId, 'suspended')
       expect(resolveSession(session.token)).toBeNull()
+    })
+  })
+
+  describe('clearTenantQueue', () => {
+    it('cancels every pending/claimed/running job for that tenant only, records an audit entry, and reports the count', async () => {
+      const tenant = createTestTenant('ClearQueueMe')
+      const otherTenant = createTestTenant('ClearQueueOther')
+
+      await runWithTenant({ tenantId: tenant.tenantId, userId: tenant.userId, role: 'owner' }, () => {
+        queue.enqueue(tenant.tenantId, [
+          { kind: 'vision', payload: { imageId: 'i1', sourceHash: 'h1', storageKey: 'k1' } },
+          { kind: 'vision', payload: { imageId: 'i2', sourceHash: 'h2', storageKey: 'k2' } },
+        ])
+      })
+      await runWithTenant({ tenantId: otherTenant.tenantId, userId: otherTenant.userId, role: 'owner' }, () => {
+        queue.enqueue(otherTenant.tenantId, [
+          { kind: 'vision', payload: { imageId: 'i3', sourceHash: 'h3', storageKey: 'k3' } },
+        ])
+      })
+
+      const result = clearTenantQueue(tenant.tenantId, ACTOR)
+
+      expect(result.cancelled).toBe(2)
+      expect(queue.stats(undefined, tenant.tenantId).pending).toBe(0)
+      expect(queue.stats(undefined, tenant.tenantId).cancelled).toBe(2)
+      // The other tenant's queue is untouched.
+      expect(queue.stats(undefined, otherTenant.tenantId).pending).toBe(1)
+
+      expect(auditLog.list({ action: 'admin_clear_queue', tenantId: tenant.tenantId })).toHaveLength(1)
+    })
+
+    it('throws AdminActionError for a tenant that does not exist', () => {
+      expect(() => clearTenantQueue('tnt_does-not-exist', ACTOR)).toThrow(AdminActionError)
     })
   })
 

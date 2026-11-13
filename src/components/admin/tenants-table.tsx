@@ -229,6 +229,22 @@ export function TenantsTable() {
     }
   }
 
+  const clearQueue = async (tenant: AdminTenantRow) => {
+    const total = tenant.queuedJobs + tenant.runningJobs
+    if (!window.confirm(`Cancel all ${total} queued/running job(s) for ${tenant.name}? This can't be undone — they can re-run the batch afterward.`)) {
+      return
+    }
+    try {
+      const result = await patchJson<{ cancelled: number }>(`/api/admin/tenants/${tenant.id}`, {
+        action: 'clear_queue',
+      })
+      toast.success(`Cancelled ${result.cancelled} job(s) for ${tenant.name}`)
+      mutate()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not clear the queue')
+    }
+  }
+
   const resetPassword = async (tenant: AdminTenantRow) => {
     if (!tenant.ownerUserId || !tenant.ownerEmail) return
     try {
@@ -329,6 +345,11 @@ export function TenantsTable() {
                           <Button size="sm" variant="ghost" onClick={() => resetPassword(tenant)}>
                             Reset password
                           </Button>
+                          {tenant.queuedJobs + tenant.runningJobs > 0 && (
+                            <Button size="sm" variant="outline" onClick={() => clearQueue(tenant)}>
+                              Clear queue
+                            </Button>
+                          )}
                           {tenant.status !== 'pending_deletion' ? (
                             <Button size="sm" variant="ghost" onClick={() => act(tenant.id, 'mark_pending_deletion')}>
                               Delete…

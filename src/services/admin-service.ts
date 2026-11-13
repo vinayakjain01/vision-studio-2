@@ -430,6 +430,27 @@ export function suspendTenant(tenantId: string, actor: Actor): void {
   auditLog.record({ actorUserId: actor.userId, tenantId, action: 'admin_suspend_tenant', detail: { name: tenant.name } })
 }
 
+/**
+ * Cancels every pending/claimed/running job for one tenant — the "Clear
+ * queue" button. Marks rows `cancelled` (via `queue.cancelAll`, the same
+ * function a prior incident's manual fixes used by hand over SSH); never
+ * deletes history, and a tenant can simply re-run whatever batch this
+ * interrupted afterward.
+ */
+export function clearTenantQueue(tenantId: string, actor: Actor): { cancelled: number } {
+  const tenant = tenants.get(tenantId)
+  if (!tenant) throw new AdminActionError('tenant not found')
+
+  const { cancelled } = queue.cancelAll(tenantId)
+  auditLog.record({
+    actorUserId: actor.userId,
+    tenantId,
+    action: 'admin_clear_queue',
+    detail: { name: tenant.name, cancelled },
+  })
+  return { cancelled }
+}
+
 export function resumeTenant(tenantId: string, actor: Actor): void {
   const tenant = tenants.get(tenantId)
   if (!tenant) throw new AdminActionError('tenant not found')
