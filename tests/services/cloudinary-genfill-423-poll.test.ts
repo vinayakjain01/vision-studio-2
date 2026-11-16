@@ -71,8 +71,10 @@ describe('generativeFill — a 423 polls the SAME derivation instead of re-uploa
       .toBuffer()
 
     let fetchCalls = 0
-    const fetchMock = vi.fn(async () => {
+    const urlsFetched: unknown[] = []
+    const fetchMock = vi.fn(async (url: unknown) => {
       fetchCalls++
+      urlsFetched.push(url)
       if (fetchCalls < 3) {
         return new Response('', {
           status: 423,
@@ -108,7 +110,6 @@ describe('generativeFill — a 423 polls the SAME derivation instead of re-uploa
     // Every fetch hit the SAME transformation URL — polling the same
     // derivation, not a freshly-generated one.
     expect(fetchMock).toHaveBeenCalledTimes(3)
-    const urlsFetched = fetchMock.mock.calls.map(call => call[0])
     expect(new Set(urlsFetched).size).toBe(1)
   })
 
