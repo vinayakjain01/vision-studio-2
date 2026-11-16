@@ -399,26 +399,55 @@ export async function generativeFill(
     ],
   })
 
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), config.cloudinary.requestTimeoutMs)
+  // A 423 here is Cloudinary's documented way of saying "this exact
+  // derivation is still being computed asynchronously — poll the SAME URL
+  // again", not "rejected, try again from scratch." The whole budget below
+  // bounds ONE background job (one upload, one public_id, one URL): every
+  // poll below re-fetches that identical `url`, never re-uploads. Getting
+  // this wrong is how a brand-new, freshly-funded Cloudinary account failed
+  // generative fill on every single attempt in production (2026-11-16): the
+  // OUTER retry loop (ai-extend-dispatcher.ts) called this whole function
+  // again on every attempt, which re-uploaded with `unique_filename: true`
+  // and so started an entirely new, independent background job each time —
+  // guaranteeing every attempt landed on a job too young to have finished,
+  // forever, regardless of account, plan, or image content.
+  const deadline = Date.now() + config.cloudinary.requestTimeoutMs
   let response: Response
-  try {
-    response = await fetch(url, { signal: controller.signal })
-  } catch (err) {
-    const aborted = err instanceof Error && err.name === 'AbortError'
-    throw new CloudinaryServiceError(
-      aborted
-        ? `Cloudinary did not return a generated image within ${config.cloudinary.requestTimeoutMs}ms. ` +
-          `Generative fill renders on their side and can be slow on first request; the derivation ` +
-          `may still complete and be served from their cache on retry.`
-        : `Could not reach Cloudinary: ${(err as Error).message}`,
-      aborted ? 'timeout' : 'unreachable'
-    )
-  } finally {
-    clearTimeout(timer)
-  }
+  for (;;) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      throw new CloudinaryServiceError(
+        `Cloudinary did not finish generating a background within ${config.cloudinary.requestTimeoutMs}ms ` +
+          `(still processing the same derivation in the background on their side).`,
+        'timeout'
+      )
+    }
 
-  if (!response.ok) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), remaining)
+    try {
+      response = await fetch(url, { signal: controller.signal })
+    } catch (err) {
+      const aborted = err instanceof Error && err.name === 'AbortError'
+      throw new CloudinaryServiceError(
+        aborted
+          ? `Cloudinary did not return a generated image within ${config.cloudinary.requestTimeoutMs}ms. ` +
+            `Generative fill renders on their side and can be slow on first request; the derivation ` +
+            `may still complete and be served from their cache on retry.`
+          : `Could not reach Cloudinary: ${(err as Error).message}`,
+        aborted ? 'timeout' : 'unreachable'
+      )
+    } finally {
+      clearTimeout(timer)
+    }
+
+    if (response.ok) break
+
+    if (response.status === 423) {
+      await new Promise(resolve => setTimeout(resolve, Math.min(config.cloudinary.pollIntervalMs, remaining)))
+      continue
+    }
+
     // Cloudinary reports the real reason in this header rather than the body
     // for transformation errors, and the body is usually a placeholder GIF.
     const detail = response.headers.get('x-cld-error') ?? (await response.text().catch(() => ''))

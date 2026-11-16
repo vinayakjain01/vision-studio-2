@@ -396,6 +396,14 @@ export const config = {
      */
     requestTimeoutMs: int(process.env.CLOUDINARY_TIMEOUT_MS, 180_000),
     /**
+     * A 423 on the generative-fill fetch means Cloudinary is still computing
+     * THIS SAME derivation in the background — their documented signal to
+     * poll the identical transformation URL again, not to start over. This
+     * is how long to wait between polls of that one URL, within the overall
+     * `requestTimeoutMs` budget.
+     */
+    pollIntervalMs: int(process.env.CLOUDINARY_POLL_INTERVAL_MS, 8_000),
+    /**
      * Longest edge the generated background may be produced at.
      *
      * Must be >= canvas longest edge x `render.supersample`, because the
