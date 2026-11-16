@@ -81,10 +81,24 @@ const nextConfig: NextConfig = {
           { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
           // No camera/mic/geolocation/etc — this app uses none of them.
           { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=()' },
-          // Only meaningful once actually served over HTTPS (Caddy, per
-          // docs/DEPLOY.md) — harmless to send over plain HTTP in dev, since
-          // browsers ignore Strict-Transport-Security on an insecure origin.
-          { key: 'Strict-Transport-Security', value: 'max-age=31536000; includeSubDomains' },
+          // Deliberately NOT sending Strict-Transport-Security. Confirmed
+          // the hard way (2026-11-16): the old reasoning here was "harmless
+          // over plain HTTP, since browsers ignore it on an insecure
+          // origin" — true only for a browser CURRENTLY on an insecure
+          // connection. Nothing in the real production deploy (docs/
+          // DEPLOY.md's PM2/bare-metal path — plain HTTP, nginx on :80, no
+          // TLS anywhere in front of it) prevents a browser from receiving
+          // this header over a genuinely secure connection at some other
+          // point (the box's nginx config still carries leftover
+          // ssl_protocols/cert directives from an earlier setup attempt).
+          // A browser that ever did caches the policy for a full year
+          // (max-age=31536000) — and HSTS's whole design point is refusing
+          // to silently fall back to HTTP on a failed HTTPS connection, so
+          // with nothing listening on :443 that browser simply can't reach
+          // the site at all: no login page, no API calls, indistinguishable
+          // from being logged out. This header is only safe to send from a
+          // deployment that reliably terminates TLS in front of every
+          // request; this one does not, so it must not send it.
           {
             key: 'Content-Security-Policy',
             value: [
