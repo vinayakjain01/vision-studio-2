@@ -120,7 +120,13 @@ describe('generativeFill — cleans up its own Cloudinary storage after a succes
     expect(result.bytes.length).toBeGreaterThan(0)
   })
 
-  it('does NOT delete anything if the generation failed (nothing to clean up from a failed call)', async () => {
+  it('still deletes the uploaded asset even when the generation ultimately fails', async () => {
+    // Reported 2026-11-18: a failed generation left its upload orphaned on
+    // Cloudinary forever — nothing ever cleaned it up, and by the time a
+    // user deletes the import/product later there is no stored public_id
+    // anywhere to even look it up by. The only place that ID ever exists is
+    // right here, inside this call, so cleanup has to happen on every exit
+    // path, not just the success one.
     const fetchMock = vi.fn(async () => new Response('', { status: 500 }))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -138,9 +144,27 @@ describe('generativeFill — cleans up its own Cloudinary storage after a succes
       })
     ).rejects.toThrow()
 
-    // The upload for this failed attempt is an orphan Cloudinary already has
-    // — there's nothing wrong with cleaning it up too, but the test here
-    // only pins down that we never crash or double-handle on the failure
-    // path. A future change could extend cleanup to this path as well.
+    expect(destroyMock).toHaveBeenCalledTimes(1)
+    expect(destroyMock).toHaveBeenCalledWith('vision-studio/ai-extend/fake-id-123', expect.objectContaining({ invalidate: true }))
+  })
+
+  it('still throws the real failure even if the cleanup-on-failure call itself also fails', async () => {
+    destroyMock.mockRejectedValue(new Error('Cloudinary is briefly unavailable'))
+    const fetchMock = vi.fn(async () => new Response('', { status: 500 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { generativeFill } = await import('@/services/cloudinary-service')
+
+    await expect(
+      generativeFill({
+        photo: await testPhoto(),
+        canvasWidth: 100,
+        canvasHeight: 100,
+        offsetX: 0,
+        offsetY: 0,
+        placedWidth: 100,
+        placedHeight: 100,
+      })
+    ).rejects.toMatchObject({ name: 'CloudinaryServiceError', kind: 'server_error' })
   })
 })
