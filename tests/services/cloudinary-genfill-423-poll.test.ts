@@ -26,12 +26,16 @@ async function testPhoto(): Promise<Buffer> {
  * forever, regardless of account, plan, or image content.
  */
 const uploadMock = vi.fn()
+const destroyMock = vi.fn()
 const urlMock = vi.fn(() => 'https://example.com/fake-genfill-url.jpg')
 
 vi.mock('cloudinary', () => ({
   v2: {
     config: vi.fn(),
-    uploader: { upload: (...args: unknown[]) => uploadMock(...args) },
+    uploader: {
+      upload: (...args: unknown[]) => uploadMock(...args),
+      destroy: (...args: unknown[]) => destroyMock(...args),
+    },
     url: () => urlMock(),
   },
 }))
@@ -51,6 +55,8 @@ describe('generativeFill — a 423 polls the SAME derivation instead of re-uploa
     ;(config.cloudinary as any).pollIntervalMs = 5
     uploadMock.mockReset()
     uploadMock.mockResolvedValue({ public_id: 'vision-studio/ai-extend/fake-id' })
+    destroyMock.mockReset()
+    destroyMock.mockResolvedValue({ result: 'ok' })
     urlMock.mockClear()
   })
 
